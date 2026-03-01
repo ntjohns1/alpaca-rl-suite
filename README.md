@@ -177,11 +177,15 @@ See `.env.example` for the full list. Critical variables:
 
 ## Reference Implementation
 
-The DDQN trading agent is based on:
-`22_deep_reinforcement_learning/04_q_learning_for_trading.ipynb`
+The DDQN trading agent is based on the Machine Learning for Algorithmic Trading book:
+- **Original notebook**: `reference/original-notebook/04_q_learning_for_trading.ipynb`
+- **Original environment**: `reference/original-notebook/trading_env.py`
+- **Implementation mapping**: See `reference/IMPLEMENTATION_MAPPING.md` for detailed architecture comparison
 
 Key adaptations:
 - `DataSource` loads from PostgreSQL/`bar_1d` instead of `assets.h5`
 - `gymnasium` replaces legacy `gym`
 - PyTorch replaces TensorFlow
 - Feature computation uses `ta` (pure Python) instead of TA-Lib
+
+**Note**: The original implementation files have been copied to the `reference/` directory for easy access during development.
