@@ -1,0 +1,29 @@
+{
+  "name": "alpaca-rl-suite",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "dev:infra": "docker compose -f infra/docker-compose.yml up -d",
+    "dev:infra:down": "docker compose -f infra/docker-compose.yml down",
+    "migrate": "pnpm --filter @alpaca-rl/api-gateway exec prisma migrate deploy"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=19.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

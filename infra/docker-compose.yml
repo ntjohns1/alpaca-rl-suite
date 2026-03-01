@@ -1,0 +1,366 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: alpaca_rl_postgres
+    environment:
+      POSTGRES_USER: rl_user
+      POSTGRES_PASSWORD: rl_pass
+      POSTGRES_DB: alpaca_rl
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/init.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rl_user -d alpaca_rl']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: alpaca_rl_nats
+    command: ['-js', '-m', '8222']
+    ports:
+      - '4222:4222'
+      - '8222:8222'
+    healthcheck:
+      test: ['CMD', 'nats-server', '--version']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  minio:
+    image: minio/minio:latest
+    container_name: alpaca_rl_minio
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:9000/minio/health/live']
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: alpaca_rl_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 minioadmin minioadmin;
+        mc mb --ignore-existing local/alpaca-rl-artifacts;
+        mc anonymous set download local/alpaca-rl-artifacts;
+        exit 0;
+      "
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: alpaca_rl_prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./observability/alerts.yml:/etc/prometheus/alerts.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - alertmanager
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: alpaca_rl_alertmanager
+    ports:
+      - '9093:9093'
+    volumes:
+      - ./observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: alpaca_rl_grafana
+    ports:
+      - '3100:3000'
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: alpaca_rl_otel
+    ports:
+      - '4317:4317'
+      - '4318:4318'
+    volumes:
+      - ./observability/otel-collector.yml:/etc/otelcol-contrib/config.yaml
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    container_name: alpaca_rl_temporal
+    ports:
+      - '7233:7233'
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=rl_user
+      - POSTGRES_PWD=rl_pass
+      - POSTGRES_SEEDS=postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: alpaca_rl_temporal_ui
+    ports:
+      - '8080:8080'
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  # ─── Node / TypeScript services ──────────────────────────────────────
+  auth:
+    build:
+      context: ..
+      dockerfile: services/auth/Dockerfile
+    container_name: alpaca_rl_auth
+    env_file: ../.env
+    ports:
+      - '${AUTH_PORT:-3001}:3001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  alpaca-adapter:
+    build:
+      context: ..
+      dockerfile: services/alpaca-adapter/Dockerfile
+    container_name: alpaca_rl_alpaca_adapter
+    env_file: ../.env
+    ports:
+      - '${ALPACA_ADAPTER_PORT:-3002}:3002'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    restart: unless-stopped
+
+  market-ingest:
+    build:
+      context: ..
+      dockerfile: services/market-ingest/Dockerfile
+    container_name: alpaca_rl_market_ingest
+    env_file: ../.env
+    ports:
+      - '${MARKET_INGEST_PORT:-3003}:3003'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      alpaca-adapter:
+        condition: service_started
+    restart: unless-stopped
+
+  orders:
+    build:
+      context: ..
+      dockerfile: services/orders/Dockerfile
+    container_name: alpaca_rl_orders
+    env_file: ../.env
+    ports:
+      - '${ORDERS_PORT:-3004}:3004'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      alpaca-adapter:
+        condition: service_started
+    restart: unless-stopped
+
+  risk:
+    build:
+      context: ..
+      dockerfile: services/risk/Dockerfile
+    container_name: alpaca_rl_risk
+    env_file: ../.env
+    ports:
+      - '${RISK_PORT:-3005}:3005'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  portfolio:
+    build:
+      context: ..
+      dockerfile: services/portfolio/Dockerfile
+    container_name: alpaca_rl_portfolio
+    env_file: ../.env
+    ports:
+      - '${PORTFOLIO_PORT:-3006}:3006'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      alpaca-adapter:
+        condition: service_started
+    restart: unless-stopped
+
+  strategy-runner:
+    build:
+      context: ..
+      dockerfile: services/strategy-runner/Dockerfile
+    container_name: alpaca_rl_strategy_runner
+    env_file: ../.env
+    ports:
+      - '${STRATEGY_RUNNER_PORT:-3007}:3007'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      risk:
+        condition: service_started
+      orders:
+        condition: service_started
+      rl-infer:
+        condition: service_started
+    restart: unless-stopped
+
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
+    container_name: alpaca_rl_api_gateway
+    env_file: ../.env
+    ports:
+      - '${API_GATEWAY_PORT:-3000}:3000'
+    depends_on:
+      - auth
+      - alpaca-adapter
+      - market-ingest
+      - orders
+      - risk
+      - portfolio
+      - strategy-runner
+    restart: unless-stopped
+
+  # ─── Python services ──────────────────────────────────────────────────
+  feature-builder:
+    build:
+      context: ../services/feature-builder
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_feature_builder
+    env_file: ../.env
+    ports:
+      - '${FEATURE_BUILDER_PORT:-8002}:8002'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  dataset-builder:
+    build:
+      context: ../services/dataset-builder
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_dataset_builder
+    env_file: ../.env
+    ports:
+      - '${DATASET_BUILDER_PORT:-8003}:8003'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  backtest:
+    build:
+      context: ../services/backtest
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_backtest
+    env_file: ../.env
+    ports:
+      - '${BACKTEST_PORT:-8001}:8001'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rl-train:
+    build:
+      context: ../services/rl-train
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_rl_train
+    env_file: ../.env
+    ports:
+      - '${RL_TRAIN_PORT:-8004}:8004'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  rl-infer:
+    build:
+      context: ../services/rl-infer
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_rl_infer
+    env_file: ../.env
+    ports:
+      - '${RL_INFER_PORT:-8005}:8005'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  temporal-worker:
+    build:
+      context: ../services/temporal-worker
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_temporal_worker
+    env_file: ../.env
+    ports:
+      - '${TEMPORAL_WORKER_PORT:-8010}:8010'
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_TASK_QUEUE=alpaca-rl-main
+      - RL_TRAIN_URL=http://rl-train:8004
+      - BACKTEST_URL=http://backtest:8001
+    depends_on:
+      - temporal
+      - rl-train
+      - backtest
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:

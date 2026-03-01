@@ -1,0 +1,127 @@
+groups:
+  # ─── Kill-switch ─────────────────────────────────────────────────────
+  - name: kill_switch
+    rules:
+      - alert: KillSwitchActive
+        expr: alpaca_rl_kill_switch_active == 1
+        for: 0m
+        labels:
+          severity: critical
+          service: risk
+        annotations:
+          summary: "Kill switch is ACTIVE"
+          description: "The risk kill switch has been triggered. All trading is halted."
+
+      - alert: KillSwitchAutoTriggered
+        expr: |
+          alpaca_rl_daily_loss_usd > 5000
+        for: 1m
+        labels:
+          severity: critical
+          service: risk
+        annotations:
+          summary: "Daily loss threshold exceeded — kill switch expected"
+          description: "Daily realized loss is {{ $value | printf \"%.2f\" }} USD (threshold: $5000)."
+
+  # ─── Service health ───────────────────────────────────────────────────
+  - name: service_health
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: "Prometheus target {{ $labels.job }} has been unreachable for > 2 minutes."
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (service, route) (
+            rate(alpaca_rl_http_requests_total{status_code=~"5.."}[5m])
+          )
+          /
+          sum by (service, route) (
+            rate(alpaca_rl_http_requests_total[5m])
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.service }}/{{ $labels.route }}"
+          description: "Error rate is {{ $value | humanizePercentage }} over the last 5 minutes."
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            sum by (service, route, le) (
+              rate(alpaca_rl_http_request_duration_ms_bucket[5m])
+            )
+          ) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High p95 latency on {{ $labels.service }}/{{ $labels.route }}"
+          description: "p95 latency is {{ $value | printf \"%.0f\" }}ms (threshold: 1000ms)."
+
+  # ─── RL inference ─────────────────────────────────────────────────────
+  - name: rl_infer
+    rules:
+      - alert: InferenceLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (symbol, le) (
+              rate(alpaca_rl_infer_latency_ms_bucket[5m])
+            )
+          ) > 100
+        for: 3m
+        labels:
+          severity: warning
+          service: rl-infer
+        annotations:
+          summary: "RL inference p99 latency high for {{ $labels.symbol }}"
+          description: "p99 inference latency is {{ $value | printf \"%.0f\" }}ms for {{ $labels.symbol }}."
+
+  # ─── Order flow ───────────────────────────────────────────────────────
+  - name: orders
+    rules:
+      - alert: OrderFailureSpike
+        expr: |
+          sum by (symbol) (
+            rate(alpaca_rl_orders_total{status="failed"}[5m])
+          ) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          service: orders
+        annotations:
+          summary: "Order failure spike for {{ $labels.symbol }}"
+          description: "Order failure rate is {{ $value | printf \"%.2f\" }}/s for {{ $labels.symbol }}."
+
+  # ─── Infrastructure ───────────────────────────────────────────────────
+  - name: infrastructure
+    rules:
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            process_resident_memory_bytes{job=~".*"}
+            / (1024 * 1024 * 1024)
+          ) > 1.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High memory usage on {{ $labels.job }}"
+          description: "Process memory is {{ $value | printf \"%.2f\" }}GB (threshold: 1.5GB)."
+
+      - alert: NATSMessagesBacklogged
+        expr: |
+          rate(alpaca_rl_nats_messages_consumed_total[5m]) == 0
+        for: 5m
+        labels:
+          severity: warning
+          service: market-ingest
+        annotations:
+          summary: "No NATS messages consumed in 5m"
+          description: "The market-ingest service has not consumed any NATS messages in the last 5 minutes."
