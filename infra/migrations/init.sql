@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS bar_1d (
     close       NUMERIC(18,6)   NOT NULL,
     volume      BIGINT          NOT NULL,
     vwap        NUMERIC(18,6),
+    trade_count INTEGER,
     PRIMARY KEY (time, symbol)
 );
 SELECT create_hypertable('bar_1d', 'time', if_not_exists => TRUE);
