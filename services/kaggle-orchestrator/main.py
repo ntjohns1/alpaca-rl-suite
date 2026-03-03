@@ -33,7 +33,15 @@ S3_BUCKET = os.getenv("S3_BUCKET", "alpaca-rl-artifacts")
 S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "minioadmin")
 KAGGLE_API_TOKEN = os.getenv("KAGGLE_API_TOKEN", "")
+KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME", "")
 KAGGLE_ORCHESTRATOR_PORT = int(os.getenv("KAGGLE_ORCHESTRATOR_PORT", "8011"))
+
+# Configure Kaggle CLI to use the API token
+# The Kaggle CLI expects KAGGLE_KEY environment variable
+if KAGGLE_API_TOKEN:
+    os.environ["KAGGLE_KEY"] = KAGGLE_API_TOKEN
+if KAGGLE_USERNAME:
+    os.environ["KAGGLE_USERNAME"] = KAGGLE_USERNAME
 
 # Kaggle API base URL
 KAGGLE_API_BASE = "https://www.kaggle.com/api/v1"
@@ -63,6 +71,13 @@ def kaggle_request(method: str, endpoint: str, **kwargs):
     kwargs["headers"] = headers
     
     response = requests.request(method, url, **kwargs)
+    
+    # Log detailed error information
+    if response.status_code >= 400:
+        log.error(f"Kaggle API error: {response.status_code} - {response.text}")
+        log.error(f"Request URL: {url}")
+        log.error(f"Request payload: {kwargs.get('json', {})}")
+    
     response.raise_for_status()
     return response.json() if response.content else {}
 
@@ -97,9 +112,11 @@ def export_training_dataset(symbol: str, output_path: str) -> dict:
 def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict:
     """Create or update a Kaggle dataset"""
     # Create dataset metadata
+    # Kaggle requires both 'id' and 'slug' fields
     metadata = {
         "title": f"Alpaca RL Trading Data - {symbol}",
         "id": f"{KAGGLE_USERNAME}/{dataset_slug}",
+        "slug": dataset_slug,
         "licenses": [{"name": "CC0-1.0"}],
         "resources": [{
             "path": os.path.basename(csv_path),
@@ -115,7 +132,10 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
         # Write metadata
         metadata_path = os.path.join(tmpdir, "dataset-metadata.json")
         with open(metadata_path, "w") as f:
-            json.dump(metadata, f)
+            json.dump(metadata, f, indent=2)
+        
+        # Log the metadata being sent
+        log.info(f"Creating Kaggle dataset with metadata: {json.dumps(metadata, indent=2)}")
         
         # Copy CSV
         shutil.copy(csv_path, tmpdir)
@@ -129,15 +149,22 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
                 capture_output=True, text=True, check=False
             )
             
-            if result.returncode != 0 and "already exists" in result.stderr:
-                # Dataset exists, update it
-                result = subprocess.run(
-                    ["kaggle", "datasets", "version", "-p", tmpdir, "-m", "Updated data"],
-                    capture_output=True, text=True, check=True
-                )
-                log.info(f"Updated Kaggle dataset: {dataset_slug}")
+            if result.returncode != 0:
+                log.error(f"Kaggle dataset creation failed. stdout: {result.stdout}, stderr: {result.stderr}")
+                
+                if "already exists" in result.stderr:
+                    # Dataset exists, update it
+                    result = subprocess.run(
+                        ["kaggle", "datasets", "version", "-p", tmpdir, "-m", "Updated data"],
+                        capture_output=True, text=True, check=False
+                    )
+                    if result.returncode != 0:
+                        log.error(f"Kaggle dataset version failed. stdout: {result.stdout}, stderr: {result.stderr}")
+                        result.check_returncode()
+                    log.info(f"Updated Kaggle dataset: {dataset_slug}")
+                else:
+                    result.check_returncode()
             else:
-                result.check_returncode()
                 log.info(f"Created Kaggle dataset: {dataset_slug}")
             
             return {
@@ -151,29 +178,29 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
 
 
 def trigger_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
-    """Trigger a Kaggle notebook run via API"""
-    # Push kernel (notebook) to run
-    # Note: Kernel must already exist on Kaggle
-    endpoint = f"/kernels/push"
+    """
+    Note: Automatic kernel triggering via API requires the kernel to exist with a numeric ID.
+    For now, we'll return instructions for manual execution.
     
-    # This requires the kernel to be pre-created on Kaggle
-    # We'll use the Kaggle API to trigger a new version
-    payload = {
-        "id": f"{KAGGLE_USERNAME}/{kernel_slug}",
-        "slug": kernel_slug,
-        "newTitle": f"RL Training Run - {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
-        "enableGpu": True,
-        "enableInternet": True,
-        "datasetDataSources": [f"{KAGGLE_USERNAME}/{dataset_slug}"]
+    TODO: Implement kernel push via Kaggle CLI or get kernel ID from slug first.
+    """
+    log.info(f"Dataset uploaded: {KAGGLE_USERNAME}/{dataset_slug}")
+    log.info(f"Manual step required: Go to https://www.kaggle.com/code/{KAGGLE_USERNAME}/{kernel_slug}")
+    log.info(f"1. Add dataset: {KAGGLE_USERNAME}/{dataset_slug}")
+    log.info(f"2. Enable GPU (Settings → Accelerator → GPU T4 x2)")
+    log.info(f"3. Click 'Run All'")
+    
+    return {
+        "status": "manual_trigger_required",
+        "dataset_url": f"https://www.kaggle.com/datasets/{KAGGLE_USERNAME}/{dataset_slug}",
+        "kernel_url": f"https://www.kaggle.com/code/{KAGGLE_USERNAME}/{kernel_slug}",
+        "instructions": [
+            f"1. Open https://www.kaggle.com/code/{KAGGLE_USERNAME}/{kernel_slug}",
+            f"2. Add dataset: {KAGGLE_USERNAME}/{dataset_slug}",
+            "3. Enable GPU in Settings",
+            "4. Click 'Run All'"
+        ]
     }
-    
-    try:
-        response = kaggle_request("POST", endpoint, json=payload)
-        log.info(f"Triggered Kaggle kernel: {kernel_slug}")
-        return response
-    except Exception as e:
-        log.error(f"Failed to trigger Kaggle kernel: {e}")
-        raise
 
 
 # ─────────────────────────────────────────
@@ -255,8 +282,8 @@ def orchestrate_kaggle_training(job_id: str, config: dict):
     """
     try:
         symbol = config["symbols"][0]
-        dataset_slug = config.get("datasetSlug", f"alpaca-rl-{symbol.lower()}")
-        kernel_slug = config.get("kernelSlug", "alpaca-rl-training")
+        dataset_slug = config.get("datasetSlug") or f"alpaca-rl-{symbol.lower()}"
+        kernel_slug = config.get("kernelSlug") or "alpaca-rl-training"
         
         # Step 1: Export dataset
         update_kaggle_job(job_id, "exporting_dataset")
