@@ -1,19 +1,21 @@
-import os
+import base64
 import io
 import json
 import hashlib
 import logging
+import os
 from contextlib import asynccontextmanager
 from observability import setup_observability
 from datetime import datetime
 from typing import Optional
 
-import pandas as pd
-import numpy as np
-import pyarrow.parquet as pq
 import boto3
+import numpy as np
+import pandas as pd
 import psycopg2
+import pyarrow.parquet as pq
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 logging.basicConfig(level=logging.INFO)
@@ -73,12 +75,96 @@ def load_policy_from_s3(policy_s3_path: str):
     return policy_fn
 
 
-def buy_and_hold_policy(_state) -> int:
-    return 2  # Always LONG
+# ─────────────────────────────────────────
+# Chart generation
+# ─────────────────────────────────────────
+def generate_charts(report_id: str, all_metrics: list[dict]) -> dict:
+    """
+    Generate equity curve, drawdown, and position charts.
+    Returns dict of {chart_name: base64_png_string}.
+    Requires matplotlib; skips gracefully if unavailable.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # non-interactive backend
+        import matplotlib.pyplot as plt
+        import matplotlib.gridspec as gridspec
+    except ImportError:
+        log.warning("matplotlib not available; skipping chart generation")
+        return {}
+
+    charts = {}
+
+    for m in all_metrics:
+        symbol = m.get("symbol", "unknown")
+        curve  = m.get("equityCurve", [])
+        if not curve:
+            continue
+
+        times      = [c["time"] for c in curve]
+        navs       = [c["nav"] for c in curve]
+        market_nav = [c["market_nav"] for c in curve]
+        positions  = [c["position"] for c in curve]
+
+        # Drawdown series
+        peak = navs[0]
+        drawdowns = []
+        for n in navs:
+            if n > peak:
+                peak = n
+            drawdowns.append((peak - n) / peak * 100)
+
+        fig = plt.figure(figsize=(12, 8))
+        gs  = gridspec.GridSpec(3, 1, figure=fig, height_ratios=[3, 1.5, 1])
+
+        # --- Equity curve ---
+        ax1 = fig.add_subplot(gs[0])
+        ax1.plot(range(len(navs)), navs, label="Strategy", color="steelblue", linewidth=1.5)
+        ax1.plot(range(len(market_nav)), market_nav, label="Buy & Hold", color="orange",
+                 linewidth=1.2, linestyle="--")
+        ax1.set_title(f"{symbol} – Equity Curve  |  Sharpe: {m.get('sharpeRatio', 0):.2f}  "
+                      f"Return: {m.get('totalReturn', 0)*100:.1f}%")
+        ax1.set_ylabel("Portfolio Value ($)")
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        # --- Drawdown ---
+        ax2 = fig.add_subplot(gs[1], sharex=ax1)
+        ax2.fill_between(range(len(drawdowns)), drawdowns, color="crimson", alpha=0.4)
+        ax2.plot(range(len(drawdowns)), drawdowns, color="crimson", linewidth=0.8)
+        ax2.set_ylabel("Drawdown (%)")
+        ax2.invert_yaxis()
+        ax2.grid(True, alpha=0.3)
+
+        # --- Position ---
+        ax3 = fig.add_subplot(gs[2], sharex=ax1)
+        ax3.step(range(len(positions)), positions, color="green", linewidth=0.8)
+        ax3.set_yticks([-1, 0, 1])
+        ax3.set_yticklabels(["Short", "Flat", "Long"])
+        ax3.set_ylabel("Position")
+        ax3.set_xlabel("Trading Day")
+        ax3.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+        plt.close(fig)
+        buf.seek(0)
+        charts[symbol] = base64.b64encode(buf.read()).decode()
+
+    return charts
 
 
-def random_policy(_state) -> int:
-    return np.random.randint(0, 3)
+def upload_charts_to_s3(report_id: str, charts: dict) -> dict:
+    """Upload PNG charts to MinIO, return {symbol: s3_key} map."""
+    s3 = get_s3()
+    chart_paths = {}
+    for symbol, b64_data in charts.items():
+        key  = f"backtests/{report_id}/charts/{symbol}.png"
+        data = base64.b64decode(b64_data)
+        s3.put_object(Bucket=S3_BUCKET, Key=key, Body=data, ContentType="image/png")
+        chart_paths[symbol] = key
+    return chart_paths
 
 
 # ─────────────────────────────────────────
@@ -192,7 +278,12 @@ def run_backtest_task(report_id: str, config: dict):
             "avgWinRate":     np.mean([m["winRate"] for m in all_metrics]),
         }
 
-        # Upload equity curves to S3
+        # Generate and upload charts
+        charts     = generate_charts(report_id, all_metrics)
+        chart_paths = upload_charts_to_s3(report_id, charts) if charts else {}
+        agg["chartPaths"] = chart_paths
+
+        # Upload full results to S3
         s3_path = f"backtests/{report_id}/results.json"
         s3 = get_s3()
         s3.put_object(
@@ -234,6 +325,11 @@ class BacktestRequest(BaseModel):
     seed: Optional[int] = None
 
 
+@app.get("/backtest/health")
+def health():
+    return {"status": "ok", "service": "backtest"}
+
+
 @app.post("/backtest/run")
 def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
     config = req.model_dump()
@@ -266,9 +362,48 @@ def list_backtests(limit: int = 50):
     return df.to_dict("records")
 
 
-@app.get("/backtest/health")
-def health():
-    return {"status": "ok", "service": "backtest"}
+@app.get("/backtest/{report_id}/charts")
+def get_backtest_charts(report_id: str):
+    """Return chart metadata (S3 paths) for a completed backtest."""
+    with get_conn() as conn:
+        df = pd.read_sql(
+            "SELECT id, status, metrics FROM backtest_report WHERE id=%s",
+            conn, params=(report_id,)
+        )
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Backtest not found")
+    row = df.iloc[0].to_dict()
+    if row["status"] != "completed":
+        raise HTTPException(status_code=400, detail=f"Backtest not completed (status={row['status']})")
+    metrics = json.loads(row["metrics"]) if isinstance(row["metrics"], str) else (row["metrics"] or {})
+    chart_paths = metrics.get("chartPaths", {})
+    return {
+        "reportId":   report_id,
+        "chartPaths": chart_paths,
+        "symbols":    list(chart_paths.keys()),
+    }
+
+
+@app.get("/backtest/{report_id}/images/{symbol}")
+def get_backtest_image(report_id: str, symbol: str):
+    """Proxy-serve a chart PNG from MinIO."""
+    with get_conn() as conn:
+        df = pd.read_sql(
+            "SELECT metrics FROM backtest_report WHERE id=%s", conn, params=(report_id,)
+        )
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Backtest not found")
+    metrics = df.iloc[0]["metrics"]
+    if isinstance(metrics, str):
+        metrics = json.loads(metrics)
+    chart_paths = (metrics or {}).get("chartPaths", {})
+    s3_key = chart_paths.get(symbol)
+    if not s3_key:
+        raise HTTPException(status_code=404, detail=f"No chart for symbol {symbol}")
+    buf = io.BytesIO()
+    get_s3().download_fileobj(S3_BUCKET, s3_key, buf)
+    buf.seek(0)
+    return Response(content=buf.read(), media_type="image/png")
 
 
 if __name__ == "__main__":

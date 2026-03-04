@@ -1,7 +1,7 @@
 #!/bin/bash
 # Test runner script for Alpaca RL Suite
 # Usage: ./scripts/run_tests.sh [test_type]
-# test_type: schema | backfill | kaggle | all | quick
+# test_type: schema | backfill | kaggle | unit | all | quick
 
 set -e
 
@@ -109,13 +109,44 @@ case $TEST_TYPE in
         run_tests "tests/test_kaggle_integration.py" "Kaggle Integration Tests" || FAILED=1
         ;;
     
+    unit)
+        echo -e "${YELLOW}Running unit tests for all Python services...${NC}"
+        SERVICES=(
+            "services/backtest"
+            "services/dataset-builder"
+            "services/kaggle-orchestrator"
+            "services/rl-train"
+            "services/dashboard"
+            "cli"
+        )
+        for svc in "${SERVICES[@]}"; do
+            echo ""
+            echo -e "${YELLOW}--- $svc ---${NC}"
+            (cd "$svc" && pytest --tb=short -q --cov-report=term-missing) || FAILED=1
+        done
+        ;;
+
     quick)
         echo -e "${YELLOW}Running quick tests (schema validation only)...${NC}"
         run_tests "tests/test_schema_validation.py" "Schema Validation Tests" || FAILED=1
         ;;
     
     all)
-        echo -e "${YELLOW}Running full test suite...${NC}"
+        echo -e "${YELLOW}Running full test suite (unit + integration)...${NC}"
+        SERVICES=(
+            "services/backtest"
+            "services/dataset-builder"
+            "services/kaggle-orchestrator"
+            "services/rl-train"
+            "services/dashboard"
+            "cli"
+        )
+        for svc in "${SERVICES[@]}"; do
+            echo ""
+            echo -e "${YELLOW}--- Unit: $svc ---${NC}"
+            (cd "$svc" && pytest --tb=short -q --cov-report=term-missing) || FAILED=1
+        done
+        echo ""
         run_tests "tests/test_schema_validation.py" "Schema Validation Tests" || FAILED=1
         run_tests "tests/test_backfill_e2e.py" "Backfill E2E Tests" || FAILED=1
         run_tests "tests/test_kaggle_integration.py" "Kaggle Integration Tests" || FAILED=1
@@ -123,7 +154,7 @@ case $TEST_TYPE in
     
     *)
         echo -e "${RED}Unknown test type: $TEST_TYPE${NC}"
-        echo "Usage: $0 [schema|backfill|kaggle|all|quick]"
+        echo "Usage: $0 [schema|backfill|kaggle|unit|all|quick]"
         exit 1
         ;;
 esac

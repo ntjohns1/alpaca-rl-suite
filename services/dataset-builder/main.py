@@ -13,7 +13,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import boto3
 import psycopg2
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 
@@ -155,6 +156,11 @@ class BuildDatasetRequest(BaseModel):
     feature_version: str = "v1"
 
 
+@app.get("/datasets/health")
+def health():
+    return {"status": "ok", "service": "dataset-builder"}
+
+
 @app.post("/datasets/build")
 def build_dataset(req: BuildDatasetRequest):
     try:
@@ -224,6 +230,82 @@ def list_datasets():
     return df.to_dict("records")
 
 
+@app.post("/datasets/export")
+def export_dataset(
+    symbols: list[str] = Query(...),
+    format: str = Query(default="csv", pattern="^(csv|parquet)$"),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+):
+    """
+    Export feature data for given symbols to CSV or Parquet.
+    Returns the file as a streaming download.
+    """
+    try:
+        s_date = start_date or "2020-01-01"
+        e_date = end_date   or datetime.utcnow().strftime("%Y-%m-%d")
+        df = fetch_features(symbols, s_date, e_date)
+        if df.empty:
+            raise HTTPException(status_code=422, detail="No data found for requested range")
+
+        filename = f"alpaca_rl_{'_'.join(symbols)}_{s_date}_{e_date}"
+
+        if format == "csv":
+            buf = io.StringIO()
+            df.to_csv(buf, index=False)
+            return Response(
+                content=buf.getvalue().encode(),
+                media_type="text/csv",
+                headers={"Content-Disposition": f'attachment; filename="{filename}.csv"'},
+            )
+        else:  # parquet
+            buf = io.BytesIO()
+            table = pa.Table.from_pandas(df)
+            pq.write_table(table, buf)
+            buf.seek(0)
+            return Response(
+                content=buf.read(),
+                media_type="application/octet-stream",
+                headers={"Content-Disposition": f'attachment; filename="{filename}.parquet"'},
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Export failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/datasets/preview")
+def preview_dataset(
+    symbols: list[str] = Query(...),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    rows: int = Query(default=20, ge=1, le=200),
+):
+    """Return a preview of feature data (up to `rows` rows per symbol)."""
+    try:
+        s_date = start_date or "2020-01-01"
+        e_date = end_date   or datetime.utcnow().strftime("%Y-%m-%d")
+        df = fetch_features(symbols, s_date, e_date)
+        if df.empty:
+            raise HTTPException(status_code=422, detail="No data found")
+        preview = df.head(rows)
+        return {
+            "symbols":    symbols,
+            "startDate":  s_date,
+            "endDate":    e_date,
+            "totalRows":  len(df),
+            "previewRows": len(preview),
+            "columns":    list(df.columns),
+            "data":       preview.to_dict("records"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Preview failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/datasets/{dataset_id}")
 def get_dataset(dataset_id: str):
     with psycopg2.connect(DATABASE_URL) as conn:
@@ -235,9 +317,15 @@ def get_dataset(dataset_id: str):
     return df.iloc[0].to_dict()
 
 
-@app.get("/datasets/health")
-def health():
-    return {"status": "ok", "service": "dataset-builder"}
+@app.delete("/datasets/{dataset_id}", status_code=204)
+def delete_dataset(dataset_id: str):
+    """Delete a dataset manifest record (does not remove S3 files)."""
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM dataset_manifest WHERE id = %s RETURNING id", (dataset_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Dataset not found")
+        conn.commit()
 
 
 if __name__ == "__main__":

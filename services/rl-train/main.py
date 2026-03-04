@@ -18,7 +18,8 @@ import pandas as pd
 import psycopg2
 import boto3
 import torch
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+from fastapi.responses import Response
 from pydantic import BaseModel
 from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
@@ -304,27 +305,140 @@ def get_run(run_id: str):
 
 
 @app.get("/rl/policies")
-def list_policies(promoted_only: bool = False):
+def list_policies(
+    promoted_only: bool = False,
+    approval_status: Optional[str] = None,
+    symbol: Optional[str] = None,
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    """List policy bundles with optional filters."""
+    conditions = []
+    params: list = []
+    if promoted_only:
+        conditions.append("promoted = TRUE")
+    if approval_status:
+        conditions.append("approval_status = %s")
+        params.append(approval_status)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    params.append(limit)
     with get_conn() as conn:
-        where = "WHERE promoted=TRUE" if promoted_only else ""
         df = pd.read_sql(
-            f"SELECT * FROM policy_bundle {where} ORDER BY created_at DESC", conn
+            f"""SELECT id, name, version, promoted, approval_status, approved_by,
+                       approved_at, created_at, s3_path, metrics
+                FROM policy_bundle {where}
+                ORDER BY created_at DESC LIMIT %s""",
+            conn, params=params,
         )
-    return df.to_dict("records")
+    records = df.to_dict("records")
+    for r in records:
+        if isinstance(r.get("metrics"), str):
+            r["metrics"] = json.loads(r["metrics"])
+    return records
 
 
-@app.post("/rl/policies/{policy_id}/promote")
-def promote_policy(policy_id: str):
+@app.get("/rl/policies/{policy_id}")
+def get_policy(policy_id: str):
+    """Get full policy bundle details."""
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT * FROM policy_bundle WHERE id=%s", conn, params=(policy_id,))
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    row = df.iloc[0].to_dict()
+    for key in ("config", "metrics"):
+        if isinstance(row.get(key), str):
+            row[key] = json.loads(row[key])
+    return row
+
+
+@app.post("/rl/policies/{policy_id}/approve")
+def approve_policy(policy_id: str, approved_by: str = "admin"):
+    """Approve a policy for promotion (sets approval_status to approved)."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE policy_bundle SET promoted=TRUE, promoted_at=NOW() WHERE id=%s RETURNING id",
-                (policy_id,)
+                """UPDATE policy_bundle
+                   SET approval_status='approved', approved_by=%s, approved_at=NOW()
+                   WHERE id=%s RETURNING id""",
+                (approved_by, policy_id),
             )
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Policy not found")
         conn.commit()
-    return {"policyId": policy_id, "promoted": True}
+    return {"policyId": policy_id, "approvalStatus": "approved", "approvedBy": approved_by}
+
+
+@app.post("/rl/policies/{policy_id}/reject")
+def reject_policy(policy_id: str, reason: Optional[str] = None, rejected_by: str = "admin"):
+    """Reject a policy from promotion."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE policy_bundle
+                   SET approval_status='rejected', rejection_reason=%s
+                   WHERE id=%s RETURNING id""",
+                (reason, policy_id),
+            )
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Policy not found")
+        conn.commit()
+    return {"policyId": policy_id, "approvalStatus": "rejected", "reason": reason}
+
+
+@app.post("/rl/policies/{policy_id}/promote")
+def promote_policy(policy_id: str, promoted_by: str = "admin"):
+    """Promote an approved policy to production. Requires approval_status=approved."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT approval_status FROM policy_bundle WHERE id=%s", (policy_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Policy not found")
+            # Allow promotion if approved or if approval columns don't exist yet (legacy)
+            approval_status = row[0] if row else None
+            if approval_status == "rejected":
+                raise HTTPException(status_code=400, detail="Cannot promote a rejected policy")
+            cur.execute(
+                """UPDATE policy_bundle
+                   SET promoted=TRUE, promoted_at=NOW(), promoted_by=%s
+                   WHERE id=%s""",
+                (promoted_by, policy_id),
+            )
+        conn.commit()
+    return {"policyId": policy_id, "promoted": True, "promotedBy": promoted_by}
+
+
+@app.get("/rl/policies/{policy_id}/download")
+def download_policy(policy_id: str):
+    """Stream the policy .zip file directly from MinIO."""
+    with get_conn() as conn:
+        df = pd.read_sql("SELECT name, s3_path FROM policy_bundle WHERE id=%s", conn, params=(policy_id,))
+    if df.empty:
+        raise HTTPException(status_code=404, detail="Policy not found")
+    row   = df.iloc[0]
+    s3    = get_s3()
+    buf   = io.BytesIO()
+    try:
+        s3.download_fileobj(S3_BUCKET, row["s3_path"], buf)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not fetch from storage: {e}")
+    buf.seek(0)
+    filename = f"{row['name'].replace(' ', '_')}.zip"
+    return Response(
+        content=buf.read(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.delete("/rl/policies/{policy_id}", status_code=204)
+def delete_policy(policy_id: str):
+    """Delete a policy bundle record (does not remove S3 file)."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM policy_bundle WHERE id=%s RETURNING id", (policy_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Policy not found")
+        conn.commit()
 
 
 @app.get("/rl/train/health")
