@@ -200,8 +200,15 @@ def train(run_id: str, config: dict):
 
         s3_path = f"models/{run_id}/policy_best.zip"
         s3 = get_s3()
-        with open(f"{ckpt_path}.zip", "rb") as f:
-            s3.put_object(Bucket=S3_BUCKET, Key=s3_path, Body=f.read())
+        try:
+            with open(f"{ckpt_path}.zip", "rb") as f:
+                s3.put_object(Bucket=S3_BUCKET, Key=s3_path, Body=f.read())
+        finally:
+            # Clean up temporary files
+            try:
+                os.unlink(f"{ckpt_path}.zip")
+            except OSError:
+                pass
 
         # Upload episode history
         hist_path = f"models/{run_id}/episode_history.json"
@@ -393,10 +400,14 @@ def promote_policy(policy_id: str, promoted_by: str = "admin"):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Policy not found")
-            # Allow promotion if approved or if approval columns don't exist yet (legacy)
             approval_status = row[0] if row else None
             if approval_status == "rejected":
                 raise HTTPException(status_code=400, detail="Cannot promote a rejected policy")
+            if approval_status != "approved":
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Policy must be approved before promotion (current status: {approval_status})"
+                )
             cur.execute(
                 """UPDATE policy_bundle
                    SET promoted=TRUE, promoted_at=NOW(), promoted_by=%s

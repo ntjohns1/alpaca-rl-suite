@@ -64,10 +64,10 @@ def show_backtest(report_id, output):
             print_kv({
                 "Report ID":      report_id,
                 "Status":         result["status"],
-                "Avg Sharpe":     f"{metrics.get('avgSharpe', '-'):.3f}" if metrics.get("avgSharpe") else "-",
-                "Avg Return":     f"{metrics.get('avgTotalReturn', 0)*100:.2f}%" if metrics.get("avgTotalReturn") else "-",
-                "Avg Drawdown":   f"{metrics.get('avgMaxDrawdown', 0)*100:.2f}%" if metrics.get("avgMaxDrawdown") else "-",
-                "Avg Win Rate":   f"{metrics.get('avgWinRate', 0)*100:.1f}%" if metrics.get("avgWinRate") else "-",
+                "Avg Sharpe":     f"{metrics.get('avgSharpe'):.3f}" if metrics.get("avgSharpe") is not None else "-",
+                "Avg Return":     f"{metrics.get('avgTotalReturn')*100:.2f}%" if metrics.get("avgTotalReturn") is not None else "-",
+                "Avg Drawdown":   f"{metrics.get('avgMaxDrawdown')*100:.2f}%" if metrics.get("avgMaxDrawdown") is not None else "-",
+                "Avg Win Rate":   f"{metrics.get('avgWinRate')*100:.1f}%" if metrics.get("avgWinRate") is not None else "-",
                 "Charts":         f"alpaca-rl backtest charts {report_id}" if result["status"] == "completed" else "-",
             }, title="Backtest Results")
     except APIError as e:

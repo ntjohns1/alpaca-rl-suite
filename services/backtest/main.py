@@ -65,7 +65,10 @@ def load_policy_from_s3(policy_s3_path: str):
         f.write(buf.read())
         tmp_path = f.name
 
-    model = SB3DQN.load(tmp_path, device="cpu")
+    try:
+        model = SB3DQN.load(tmp_path, device="cpu")
+    finally:
+        os.unlink(tmp_path)
 
     def policy_fn(state: list) -> int:
         obs = np.array(state, dtype=np.float32).reshape(1, -1)
@@ -105,6 +108,9 @@ def generate_charts(report_id: str, all_metrics: list[dict]) -> dict:
         navs       = [c["nav"] for c in curve]
         market_nav = [c["market_nav"] for c in curve]
         positions  = [c["position"] for c in curve]
+
+        if not navs:
+            continue
 
         # Drawdown series
         peak = navs[0]
