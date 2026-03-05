@@ -319,6 +319,11 @@ app = FastAPI(title="Backtest Service", lifespan=lifespan)
 setup_observability(app, "backtest")
 
 
+@app.get("/backtest/health")
+def health():
+    return {"status": "ok", "service": "backtest"}
+
+
 class BacktestRequest(BaseModel):
     name: str
     symbols: list[str]
@@ -329,11 +334,6 @@ class BacktestRequest(BaseModel):
     timeCostBps: float = 1
     policyId: Optional[str] = None
     seed: Optional[int] = None
-
-
-@app.get("/backtest/health")
-def health():
-    return {"status": "ok", "service": "backtest"}
 
 
 @app.post("/backtest/run")

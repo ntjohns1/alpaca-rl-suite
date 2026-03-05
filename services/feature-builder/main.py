@@ -142,6 +142,12 @@ class BuildFeaturesRequest(BaseModel):
     days: int = 252
 
 
+class ComputeFeaturesRequest(BaseModel):
+    symbols: list[str]
+    start_date: str
+    end_date: str
+
+
 @app.post("/features/build")
 def build_features(req: BuildFeaturesRequest):
     results = {}
@@ -162,6 +168,78 @@ def build_features(req: BuildFeaturesRequest):
         except Exception as e:
             log.error(f"Feature build failed for {symbol}: {e}")
             results[symbol] = {"status": "error", "error": str(e)}
+    return results
+
+
+@app.post("/features/compute")
+def compute_features_for_range(req: ComputeFeaturesRequest):
+    """On-demand feature computation for a specific date range."""
+    results = {}
+    for symbol in req.symbols:
+        try:
+            with get_conn() as conn:
+                df = pd.read_sql(
+                    """
+                    SELECT time, symbol, open::float, high::float, low::float,
+                           close::float, volume::bigint
+                    FROM bar_1d
+                    WHERE symbol = %s
+                      AND time BETWEEN %s AND %s
+                    ORDER BY time
+                    """,
+                    conn,
+                    params=(symbol, req.start_date, req.end_date),
+                )
+            if len(df) < 22:
+                results[symbol] = {"status": "insufficient_data", "rows": len(df)}
+                continue
+            feat_df = compute_features(df)
+            rows = feat_df[[
+                "time","ret_1d","ret_2d","ret_5d","ret_10d","ret_21d",
+                "rsi","macd","atr","stoch","ultosc",
+            ]].assign(symbol=symbol).to_dict("records")
+            upsert_features(rows)
+            results[symbol] = {"status": "ok", "rows": len(rows)}
+            log.info(f"Computed {len(rows)} feature rows for {symbol} [{req.start_date} → {req.end_date}]")
+        except Exception as e:
+            log.error(f"Feature compute failed for {symbol}: {e}")
+            results[symbol] = {"status": "error", "error": str(e)}
+    return results
+
+
+@app.get("/features/availability")
+def check_feature_availability(
+    symbols: str,
+    start_date: str,
+    end_date: str,
+):
+    """Check how many feature rows exist for the given symbols and date range."""
+    symbol_list = [s.strip() for s in symbols.split(",")]
+    results = {}
+    with get_conn() as conn:
+        for symbol in symbol_list:
+            row = pd.read_sql(
+                """
+                SELECT COUNT(*) as feature_count
+                FROM feature_row
+                WHERE symbol = %s AND time BETWEEN %s AND %s
+                """,
+                conn,
+                params=(symbol, start_date, end_date),
+            )
+            bar_row = pd.read_sql(
+                """
+                SELECT COUNT(*) as bar_count
+                FROM bar_1d
+                WHERE symbol = %s AND time BETWEEN %s AND %s
+                """,
+                conn,
+                params=(symbol, start_date, end_date),
+            )
+            results[symbol] = {
+                "feature_rows": int(row.iloc[0]["feature_count"]),
+                "bar_rows": int(bar_row.iloc[0]["bar_count"]),
+            }
     return results
 
 

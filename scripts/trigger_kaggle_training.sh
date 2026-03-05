@@ -1,10 +1,22 @@
 #!/bin/bash
+# ⚠️  DEPRECATED — Use the unified CLI or Kaggle Orchestrator service instead.
+#
+#   CLI:     alpaca-rl train --mode kaggle --symbol SPY --timesteps 500000
+#   API:     POST http://localhost:8011/kaggle/train
+#
+# The kaggle-orchestrator service now handles dataset upload and kernel
+# triggering automatically. This script is kept for reference only.
+# ─────────────────────────────────────────────────────────────────────────
+#
 # Trigger Kaggle training by updating kernel with new dataset
 #
 # Usage: ./trigger_kaggle_training.sh <dataset-slug>
 # Example: ./trigger_kaggle_training.sh alpaca-rl-spy-20260303
 
 set -e
+
+echo "⚠️  WARNING: This script is deprecated. Use 'alpaca-rl train --mode kaggle' instead."
+echo ""
 
 DATASET_SLUG=$1
 KERNEL_SLUG="nelsonjohns/alpaca-rl-training"

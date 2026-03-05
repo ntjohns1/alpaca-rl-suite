@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
 """
+⚠️  DEPRECATED — Use the unified CLI or Backtest service instead.
+
+    CLI:  alpaca-rl backtest run --policy-id <id> --symbol SPY
+    API:  POST http://localhost:8001/backtest/run
+
+The backtest service now handles policy loading from S3, chart generation,
+and metric calculation. This script is kept for reference only.
+─────────────────────────────────────────────────────────────────────────
+
 Backtest trained RL policy on held-out test data.
 
 Usage:

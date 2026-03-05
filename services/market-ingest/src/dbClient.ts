@@ -80,6 +80,19 @@ export class DbClient {
     return res.rows.map((r: any) => r.symbol);
   }
 
+  async queryBarCount(
+    table: 'bar_1m' | 'bar_1d',
+    symbol: string,
+    start: string,
+    end: string,
+  ): Promise<number> {
+    const res = await this.pool.query(
+      `SELECT COUNT(*) as cnt FROM ${table} WHERE symbol = $1 AND time BETWEEN $2 AND $3`,
+      [symbol, start, end],
+    );
+    return parseInt(res.rows[0].cnt, 10);
+  }
+
   async close() {
     await this.pool.end();
   }
