@@ -6,12 +6,15 @@ to the various alpaca-rl-suite microservices.
 import logging
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import requests
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+from auth import get_current_user, get_optional_user, keycloak_auth
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -28,6 +31,11 @@ DASHBOARD_SERVICE_URL   = os.getenv("DASHBOARD_SERVICE_URL","http://dashboard:80
 MARKET_SERVICE_URL      = os.getenv("MARKET_SERVICE_URL",   "http://market-ingest:3003")
 FEATURE_SERVICE_URL     = os.getenv("FEATURE_SERVICE_URL",  "http://feature-builder:8002")
 GRAFANA_URL             = os.getenv("GRAFANA_URL", "http://grafana:3000")
+
+# Keycloak configuration
+KEYCLOAK_URL            = os.getenv("KEYCLOAK_URL", "https://auth.nelsonjohns.com")
+KEYCLOAK_REALM          = os.getenv("KEYCLOAK_REALM", "admin")
+KEYCLOAK_CLIENT_ID      = os.getenv("KEYCLOAK_CLIENT_ID", "alpaca-rl-web-ui")
 
 SERVICE_MAP = {
     "kaggle":    KAGGLE_SERVICE_URL,
@@ -58,11 +66,34 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────
+# Authentication endpoints
+# ─────────────────────────────────────────
+@app.get("/api/auth/config")
+async def get_auth_config():
+    """Return Keycloak configuration for frontend."""
+    return {
+        "url": KEYCLOAK_URL,
+        "realm": KEYCLOAK_REALM,
+        "clientId": KEYCLOAK_CLIENT_ID,
+    }
+
+
+@app.get("/api/auth/userinfo")
+async def get_user_info(user: dict = Depends(get_current_user)):
+    """Return current user information."""
+    return user
+
+
+# ─────────────────────────────────────────
 # API Proxy — forwards /api/{service}/... to the correct backend
 # ─────────────────────────────────────────
 @app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_no_path(service: str, request: Request):
+async def proxy_no_path(service: str, request: Request, user: dict = Depends(get_current_user)):
     """Reverse-proxy API requests to the appropriate microservice (no path)."""
+    # Skip auth service - handled by dedicated endpoints above
+    if service == "auth":
+        return JSONResponse({"error": "Not found"}, status_code=404)
+    
     target_base = SERVICE_MAP.get(service)
     if not target_base:
         return JSONResponse({"error": f"Unknown service: {service}"}, status_code=404)
@@ -73,6 +104,11 @@ async def proxy_no_path(service: str, request: Request):
     try:
         body = await request.body()
         headers = {"Content-Type": request.headers.get("content-type", "application/json")}
+        
+        # Forward authentication token to backend services
+        auth_header = request.headers.get("authorization")
+        if auth_header:
+            headers["Authorization"] = auth_header
 
         resp = requests.request(
             method=request.method,
@@ -97,7 +133,7 @@ async def proxy_no_path(service: str, request: Request):
 
 
 @app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy(service: str, path: str, request: Request):
+async def proxy(service: str, path: str, request: Request, user: dict = Depends(get_current_user)):
     """Reverse-proxy API requests to the appropriate microservice."""
     target_base = SERVICE_MAP.get(service)
     if not target_base:
@@ -113,6 +149,11 @@ async def proxy(service: str, path: str, request: Request):
     try:
         body = await request.body()
         headers = {"Content-Type": request.headers.get("content-type", "application/json")}
+        
+        # Forward authentication token to backend services
+        auth_header = request.headers.get("authorization")
+        if auth_header:
+            headers["Authorization"] = auth_header
 
         resp = requests.request(
             method=request.method,
@@ -147,6 +188,30 @@ def get_config():
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "web-ui"}
+
+
+@app.get("/api/auth/test")
+async def test_keycloak():
+    """Test Keycloak connectivity from backend."""
+    import requests
+    try:
+        url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/.well-known/openid-configuration"
+        resp = requests.get(url, timeout=5)
+        return {
+            "status": "ok" if resp.status_code == 200 else "error",
+            "keycloak_url": KEYCLOAK_URL,
+            "realm": KEYCLOAK_REALM,
+            "client_id": KEYCLOAK_CLIENT_ID,
+            "response_code": resp.status_code,
+            "accessible": resp.status_code == 200
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+            "keycloak_url": KEYCLOAK_URL,
+            "realm": KEYCLOAK_REALM,
+        }
 
 
 # ─────────────────────────────────────────

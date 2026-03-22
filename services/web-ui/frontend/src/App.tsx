@@ -1,6 +1,8 @@
 import { Routes, Route } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { useOidc } from '@/auth/oidc'
 import { Sidebar } from '@/components/Sidebar'
+import { LoginPage } from '@/pages/LoginPage'
 import { Dashboard } from '@/pages/Dashboard'
 import { Training } from '@/pages/Training'
 import { Approvals } from '@/pages/Approvals'
@@ -10,10 +12,18 @@ import { Monitoring } from '@/pages/Monitoring'
 import { fetchOverview } from '@/api/client'
 
 export default function App() {
+  const oidc = useOidc()
+
   const { data: overview } = useQuery({
     queryKey: ['overview'],
     queryFn: fetchOverview,
+    enabled: oidc.isUserLoggedIn,
   })
+
+  // Show login page for unauthenticated users
+  if (!oidc.isUserLoggedIn) {
+    return <LoginPage />
+  }
 
   return (
     <div className="flex h-screen overflow-hidden bg-background">

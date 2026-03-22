@@ -1,8 +1,14 @@
+import { fetchWithAuth } from '@/auth/oidc'
+
 const BASE = '/api'
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(`${BASE}${url}`, {
-    headers: { 'Content-Type': 'application/json' },
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+  }
+
+  const resp = await fetchWithAuth(`${BASE}${url}`, {
+    headers,
     ...init,
   })
   if (!resp.ok) {

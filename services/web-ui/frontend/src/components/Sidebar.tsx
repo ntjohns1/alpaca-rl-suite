@@ -6,9 +6,12 @@ import {
   Brain,
   Database,
   Activity,
+  LogOut,
+  User,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { useOidc } from '@/auth/oidc'
 
 interface NavItem {
   to: string
@@ -57,9 +60,43 @@ export function Sidebar({ pendingApprovals }: { pendingApprovals?: number }) {
           </NavLink>
         ))}
       </nav>
-      <div className="border-t p-3 text-xs text-muted-foreground">
-        Alpaca RL Suite v1.0
-      </div>
+      <UserProfile />
     </aside>
+  )
+}
+
+function UserProfile() {
+  const oidc = useOidc()
+
+  // Sidebar only renders when authenticated, so this should always be true
+  if (!oidc.isUserLoggedIn) return null
+
+  const { decodedIdToken } = oidc
+
+  return (
+    <div className="border-t">
+      <div className="flex items-center gap-3 p-3">
+        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
+          <User className="h-4 w-4 text-primary" />
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <p className="truncate text-sm font-medium">
+            {decodedIdToken.name || decodedIdToken.preferred_username || 'User'}
+          </p>
+          <p className="truncate text-xs text-muted-foreground">
+            {decodedIdToken.email || ''}
+          </p>
+        </div>
+      </div>
+      <div className="px-2 pb-2">
+        <button
+          onClick={() => oidc.logout({ redirectTo: "current page" })}
+          className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+        >
+          <LogOut className="h-4 w-4" />
+          Logout
+        </button>
+      </div>
+    </div>
   )
 }
