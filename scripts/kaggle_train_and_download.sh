@@ -1,4 +1,15 @@
 #!/bin/bash
+# ⚠️  DEPRECATED — Use the unified CLI or Kaggle Orchestrator service instead.
+#
+#   CLI:     alpaca-rl train --mode kaggle --symbol SPY --timesteps 500000
+#   API:     POST http://localhost:8011/kaggle/train
+#   Stream:  GET  http://localhost:8011/kaggle/jobs/{id}/stream
+#
+# The kaggle-orchestrator service now handles the full automated workflow
+# (export → upload → train → poll → download → backtest → approval gate).
+# This script is kept for reference only.
+# ─────────────────────────────────────────────────────────────────────────
+#
 # Complete automated Kaggle training workflow
 # 
 # This script:
@@ -13,6 +24,9 @@
 # Example: ./kaggle_train_and_download.sh alpaca-rl-spy-20260303 SPY
 
 set -e
+
+echo "⚠️  WARNING: This script is deprecated. Use 'alpaca-rl train --mode kaggle' instead."
+echo ""
 
 # Use full path to kaggle CLI
 KAGGLE_CLI="${KAGGLE_CLI:-/home/noslen/anaconda3/envs/alpaca/bin/kaggle}"

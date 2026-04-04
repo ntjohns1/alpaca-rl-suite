@@ -369,13 +369,55 @@ services:
       - DATABASE_URL=postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET=alpaca-rl-artifacts
-      - S3_ACCESS_KEY=minioadmin
-      - S3_SECRET_KEY=minioadmin
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../services/dashboard
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_dashboard
+    env_file: ../.env
+    ports:
+      - '${DASHBOARD_PORT:-8020}:8020'
+    environment:
+      - DATABASE_URL=postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl
+      - KAGGLE_SERVICE_URL=http://kaggle-orchestrator:8011
+      - BACKTEST_SERVICE_URL=http://backtest:8001
+      - RL_TRAIN_SERVICE_URL=http://rl-train:8004
+      - DATASET_SERVICE_URL=http://dataset-builder:8003
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web-ui:
+    build:
+      context: ../services/web-ui
+      dockerfile: Dockerfile
+    container_name: alpaca_rl_web_ui
+    env_file: ../.env
+    ports:
+      - '${WEB_UI_PORT:-3200}:3200'
+    environment:
+      - KAGGLE_SERVICE_URL=http://kaggle-orchestrator:8011
+      - BACKTEST_SERVICE_URL=http://backtest:8001
+      - RL_TRAIN_SERVICE_URL=http://rl-train:8004
+      - DATASET_SERVICE_URL=http://dataset-builder:8003
+      - DASHBOARD_SERVICE_URL=http://dashboard:8020
+      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_EXTERNAL_URL=http://localhost:3100
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-https://auth.nelsonjohns.com}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-admin}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
+    depends_on:
+      - dashboard
+      - kaggle-orchestrator
+      - backtest
     restart: unless-stopped
 
 volumes:

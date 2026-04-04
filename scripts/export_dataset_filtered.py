@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
 """
+⚠️  DEPRECATED — Use the unified CLI or Dataset Builder service instead.
+
+    CLI:  alpaca-rl dataset export --symbol SPY --start 2022-01-01 --end 2024-12-31 --format csv --output spy.csv
+    API:  POST http://localhost:8003/datasets/export?symbols=SPY&format=csv&start_date=2022-01-01&end_date=2024-12-31
+
+The dataset-builder service now handles CSV and Parquet exports with date
+filtering. This script is kept for reference only.
+─────────────────────────────────────────────────────────────────────────
+
 Export training dataset from PostgreSQL to CSV with date filtering.
 Usage: python export_dataset_filtered.py --symbol SPY --start 2022-01-01 --end 2024-12-31 --output spy_data.csv
 """

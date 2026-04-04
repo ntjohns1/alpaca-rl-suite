@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
 """
+⚠️  DEPRECATED — Use the unified CLI or Dataset Builder service instead.
+
+    CLI:  alpaca-rl dataset export --symbol SPY --format csv --output spy.csv
+    API:  POST http://localhost:8003/datasets/export?symbols=SPY&format=csv
+
+The dataset-builder service now handles CSV and Parquet exports with date
+filtering. The kaggle-orchestrator also exports datasets automatically as
+part of the training workflow. This script is kept for reference only.
+─────────────────────────────────────────────────────────────────────────
+
 Export training dataset from PostgreSQL to CSV for Kaggle upload.
 Usage: python export_dataset.py --symbol SPY --output spy_data.csv
 """

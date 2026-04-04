@@ -3,14 +3,22 @@
 Get Kaggle kernel metadata including id_no using the API directly.
 """
 import json
+import os
+import sys
 import requests
 
-# Kaggle credentials
-username = "nelsonjohns"
-api_key = "KGAT_2e11e55db108a0ed454f0bff1ca24fd3"
+# Kaggle credentials from environment
+username = os.getenv("KAGGLE_USERNAME")
+api_key = os.getenv("KAGGLE_KEY")
+
+if not username or not api_key:
+    print("❌ Error: KAGGLE_USERNAME and KAGGLE_KEY environment variables must be set")
+    print("   Set them using: export KAGGLE_USERNAME=your_username")
+    print("                   export KAGGLE_KEY=your_api_key")
+    sys.exit(1)
 
 # Get kernel metadata
-kernel_slug = "nelsonjohns/alpaca-rl-training"
+kernel_slug = f"{username}/alpaca-rl-training"
 
 url = f"https://www.kaggle.com/api/v1/kernels/status/{kernel_slug}"
 

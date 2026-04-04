@@ -146,6 +146,11 @@ app = FastAPI(title="Dataset Builder", lifespan=lifespan)
 setup_observability(app, "dataset-builder")
 
 
+@app.get("/datasets/health")
+def health():
+    return {"status": "ok", "service": "dataset-builder"}
+
+
 class BuildDatasetRequest(BaseModel):
     name: str
     symbols: list[str]
@@ -154,11 +159,6 @@ class BuildDatasetRequest(BaseModel):
     n_splits: int = 5
     train_frac: float = 0.7
     feature_version: str = "v1"
-
-
-@app.get("/datasets/health")
-def health():
-    return {"status": "ok", "service": "dataset-builder"}
 
 
 @app.post("/datasets/build")

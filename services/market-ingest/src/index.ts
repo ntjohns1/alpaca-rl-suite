@@ -44,6 +44,22 @@ app.get('/market/symbols', async (_req, reply) => {
   return reply.send(rows);
 });
 
+app.get('/market/availability', async (req: any, reply) => {
+  const { symbols, start, end, timeframe = '1d' } = req.query as any;
+  if (!symbols || !start || !end) {
+    return reply.status(400).send({ error: 'symbols, start, and end are required' });
+  }
+  const table = timeframe === '1m' ? 'bar_1m' : 'bar_1d';
+  const symbolList: string[] = String(symbols).split(',').map((s: string) => s.trim());
+  const results = await Promise.all(
+    symbolList.map(async (symbol: string) => {
+      const available = await db.queryBarCount(table, symbol, start, end);
+      return { symbol, available };
+    })
+  );
+  return reply.send(results);
+});
+
 app.get('/market/health', async (_req, reply) => {
   reply.send({ status: 'ok', service: 'market-ingest' });
 });
