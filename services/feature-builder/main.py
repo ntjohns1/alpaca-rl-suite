@@ -181,11 +181,14 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_state_vector(row: pd.Series) -> list[float]:
-    """Build the 10-element state vector matching trading_env.py DataSource."""
-    from sklearn.preprocessing import scale
-    cols = ["ret_1d","ret_2d","ret_5d","ret_10d","ret_21d",
-            "rsi","macd","atr","stoch","ultosc"]
-    return [float(row[c]) for c in cols]
+    """Build the 20-element state vector matching trading_env.py DataSource."""
+    vec = []
+    for c in ALL_FEATURE_COLS:
+        v = row.get(c, 0.0)
+        if v is None or (isinstance(v, float) and math.isnan(v)):
+            v = 0.0
+        vec.append(float(v))
+    return vec
 
 
 # ─────────────────────────────────────────

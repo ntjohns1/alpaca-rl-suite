@@ -102,7 +102,7 @@ export class RunnerScheduler {
     const ret5  = (closes[0] - closes[5]) / closes[5];
     const ret10 = (closes[0] - closes[10]) / closes[10];
     const ret21 = (closes[0] - closes[21]) / closes[21];
-    return [ret1, ret2, ret5, ret10, ret21, 0, 0, 0, 0, 0];
+    return [ret1, ret2, ret5, ret10, ret21, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
   }
 
   private allocate(scores: SymbolScore[]): Array<{symbol: string; side: 'buy'|'sell'; notional: number}> {
