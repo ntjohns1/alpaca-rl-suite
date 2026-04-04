@@ -75,6 +75,17 @@ def build_walk_forward_splits(
     return splits
 
 
+TECHNICAL_COLS = [
+    "ret_1d", "ret_2d", "ret_5d", "ret_10d", "ret_21d",
+    "rsi", "macd", "atr", "stoch", "ultosc",
+]
+SHARADAR_COLS = [
+    "pe", "pb", "ps", "evebitda", "marketcap_log",
+    "roe", "roa", "debt_equity", "revenue_growth", "fcf_yield",
+]
+ALL_FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS
+
+
 def fetch_features(symbols: list[str], start_date: str, end_date: str) -> pd.DataFrame:
     with psycopg2.connect(DATABASE_URL) as conn:
         placeholders = ",".join(["%s"] * len(symbols))
@@ -83,7 +94,13 @@ def fetch_features(symbols: list[str], start_date: str, end_date: str) -> pd.Dat
             SELECT f.time, f.symbol,
                    f.ret_1d, f.ret_2d, f.ret_5d, f.ret_10d, f.ret_21d,
                    f.rsi, f.macd, f.atr, f.stoch, f.ultosc,
-                   b.close::float as close
+                   f.pe, f.pb, f.ps, f.evebitda, f.marketcap_log,
+                   f.roe, f.roa, f.debt_equity, f.revenue_growth, f.fcf_yield,
+                   b.open::float  as open,
+                   b.high::float  as high,
+                   b.low::float   as low,
+                   b.close::float as close,
+                   b.volume::bigint as volume
             FROM feature_row f
             JOIN bar_1d b USING (time, symbol)
             WHERE f.symbol IN ({placeholders})
@@ -158,7 +175,7 @@ class BuildDatasetRequest(BaseModel):
     end_date: str
     n_splits: int = 5
     train_frac: float = 0.7
-    feature_version: str = "v1"
+    feature_version: str = "v2"
 
 
 @app.post("/datasets/build")

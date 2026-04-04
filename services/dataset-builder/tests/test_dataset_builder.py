@@ -45,6 +45,7 @@ def _make_feature_df(n: int = 400, symbols=("SPY",)) -> pd.DataFrame:
     rows = []
     for sym in symbols:
         for d in dates:
+            close = 100.0 + rng.normal(0, 5)
             rows.append({
                 "time": d, "symbol": sym,
                 "ret_1d":  rng.normal(0, 0.01),
@@ -57,7 +58,21 @@ def _make_feature_df(n: int = 400, symbols=("SPY",)) -> pd.DataFrame:
                 "atr":    rng.uniform(0.5, 3.0),
                 "stoch":  rng.uniform(10, 90),
                 "ultosc": rng.uniform(20, 80),
-                "close":  100.0,
+                "pe":     rng.uniform(10, 40),
+                "pb":     rng.uniform(1, 10),
+                "ps":     rng.uniform(1, 15),
+                "evebitda": rng.uniform(5, 25),
+                "marketcap_log": rng.uniform(20, 28),
+                "roe":    rng.uniform(-0.1, 0.4),
+                "roa":    rng.uniform(-0.05, 0.2),
+                "debt_equity": rng.uniform(0, 3),
+                "revenue_growth": rng.uniform(-0.2, 0.5),
+                "fcf_yield": rng.uniform(-0.05, 0.15),
+                "open":   close * rng.uniform(0.99, 1.0),
+                "high":   close * rng.uniform(1.0, 1.01),
+                "low":    close * rng.uniform(0.99, 1.0),
+                "close":  close,
+                "volume": int(rng.integers(1_000_000, 10_000_000)),
             })
     return pd.DataFrame(rows)
 
