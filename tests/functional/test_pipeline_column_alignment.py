@@ -285,9 +285,12 @@ def test_main_kaggle_notebook_feature_lists_match_shared_contract():
 
 def test_kernel_setup_notebook_feature_lists_match_shared_contract():
     source = _load_notebook_code(KERNEL_SETUP_NOTEBOOK_PATH)
-    notebook_technical = _extract_list_assignment(source, "FEATURE_COLS")
+    notebook_technical = _extract_list_assignment(source, "TECHNICAL_COLS")
+    notebook_sharadar = _extract_list_assignment(source, "SHARADAR_COLS")
 
-    assert notebook_technical == ALL_FEATURE_COLS
+    assert notebook_technical == TECHNICAL_COLS
+    assert notebook_sharadar == SHARADAR_COLS
+    assert "import ta" not in source
 
 
 def test_dataset_builder_parquet_schema_preserves_all_feature_columns():
