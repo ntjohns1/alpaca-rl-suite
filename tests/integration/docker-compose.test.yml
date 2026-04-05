@@ -49,8 +49,8 @@ services:
 
   feature-builder:
     build:
-      context: ../../services/feature-builder
-      dockerfile: Dockerfile
+      context: ../../
+      dockerfile: services/feature-builder/Dockerfile
     container_name: alpaca_rl_feature_builder_test
     environment:
       DATABASE_URL: postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl
@@ -63,8 +63,8 @@ services:
 
   dataset-builder:
     build:
-      context: ../../services/dataset-builder
-      dockerfile: Dockerfile
+      context: ../../
+      dockerfile: services/dataset-builder/Dockerfile
     container_name: alpaca_rl_dataset_builder_test
     environment:
       DATABASE_URL: postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl

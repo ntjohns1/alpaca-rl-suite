@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        service: [feature-builder, dataset-builder, backtest, rl-train, rl-infer]
+        service: [backtest, dashboard, dataset-builder, feature-builder, kaggle-orchestrator, rl-train]
     steps:
       - uses: actions/checkout@v4
 
@@ -54,11 +54,9 @@ jobs:
         run: |
           pip install ruff pytest
           pip install -r services/${{ matrix.service }}/requirements.txt
-        continue-on-error: true  # some deps (torch) are large; allow partial install in CI
 
       - name: Lint with ruff
         run: ruff check services/${{ matrix.service }}/
-        continue-on-error: true
 
       - name: Run tests
         run: |
@@ -67,6 +65,26 @@ jobs:
           else
             echo "No tests directory found for ${{ matrix.service }}, skipping"
           fi
+
+  python-lint-only:
+    name: Python lint only
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [rl-infer, temporal-worker, web-ui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint with ruff
+        run: ruff check services/${{ matrix.service }}/
 
   # ─── Phase 2: Column alignment contract suite ───────────────────────
   column-alignment:
@@ -82,7 +100,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest numpy pandas pyarrow
+          pip install pytest numpy pandas pyarrow scikit-learn ta
 
       - name: Run phase 2 contract tests
         run: pytest tests/functional/test_pipeline_column_alignment.py -q
@@ -95,3 +113,6 @@ jobs:
 
       - name: Validate docker-compose config
         run: docker compose -f infra/docker-compose.yml config --quiet
+
+      - name: Validate integration docker-compose config
+        run: docker compose -f tests/integration/docker-compose.test.yml config --quiet
