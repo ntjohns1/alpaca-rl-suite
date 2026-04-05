@@ -3,6 +3,7 @@ High-value column alignment tests for the 20-feature pipeline.
 These tests avoid Docker and focus on contract drift across service boundaries.
 """
 import ast
+import contextlib
 import importlib.util
 import json
 import os
@@ -22,8 +23,8 @@ DATASET_BUILDER_PATH = ROOT / "services" / "dataset-builder" / "main.py"
 KAGGLE_ORCH_PATH = ROOT / "services" / "kaggle-orchestrator" / "main.py"
 TRADING_ENV_PATH = ROOT / "services" / "rl-train" / "trading_env.py"
 MAIN_NOTEBOOK_PATH = ROOT / "kaggle" / "notebooks" / "alpaca-rl-training.ipynb"
+KERNEL_SETUP_NOTEBOOK_PATH = ROOT / "kaggle" / "kernel-setup" / "alpaca-rl-training.ipynb"
 
-import sys
 sys.path.insert(0, str(SHARED_DIR))
 
 from feature_columns import ALL_FEATURE_COLS, SHARADAR_COLS, TECHNICAL_COLS
@@ -31,13 +32,12 @@ from feature_columns import ALL_FEATURE_COLS, SHARADAR_COLS, TECHNICAL_COLS
 
 def load_module(name: str, path: Path):
     _install_stubs()
-    sys.path.insert(0, str(path.parent))
-    sys.path.insert(0, str(SHARED_DIR))
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+    with _temporary_sys_path([str(path.parent), str(SHARED_DIR)]):
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
 
 
 def _make_pipeline_df(n: int = 120, seed: int = 5) -> pd.DataFrame:
@@ -80,6 +80,18 @@ def _load_notebook_code(path: Path) -> str:
             lines.append(line)
         chunks.append("".join(lines))
     return "\n\n".join(chunks)
+
+
+@contextlib.contextmanager
+def _temporary_sys_path(paths: list[str]):
+    original = list(sys.path)
+    for path in reversed(paths):
+        if path not in sys.path:
+            sys.path.insert(0, path)
+    try:
+        yield
+    finally:
+        sys.path[:] = original
 
 
 def _extract_list_assignment(source: str, variable_name: str) -> list[str]:
@@ -269,6 +281,13 @@ def test_main_kaggle_notebook_feature_lists_match_shared_contract():
 
     assert notebook_technical == TECHNICAL_COLS
     assert notebook_sharadar == SHARADAR_COLS
+
+
+def test_kernel_setup_notebook_feature_lists_match_shared_contract():
+    source = _load_notebook_code(KERNEL_SETUP_NOTEBOOK_PATH)
+    notebook_technical = _extract_list_assignment(source, "FEATURE_COLS")
+
+    assert notebook_technical == ALL_FEATURE_COLS
 
 
 def test_dataset_builder_parquet_schema_preserves_all_feature_columns():

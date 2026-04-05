@@ -83,12 +83,14 @@ class TestComputeFeatures:
         from main import compute_features
 
         df = _make_bars_with_sharadar()
+        original_len = len(compute_features(df))
         df.loc[df.index[30], "close"] = np.nan
         df.loc[df.index[40], "pe"] = np.nan
 
         feat_df = compute_features(df)
 
         assert not feat_df.empty
+        assert len(feat_df) < original_len
         assert not feat_df[TECHNICAL_COLS].isnull().any().any()
         assert feat_df[SHARADAR_COLS].isnull().any().any()
 
@@ -166,6 +168,19 @@ class TestSafeFloat:
 
 
 class TestApiEndpoints:
+    def test_build_endpoint_returns_insufficient_data_for_short_history(self, app_client):
+        bars = _make_bars_df(n=10)
+        mock_conn = _MockConn()
+
+        with patch("main.get_conn", return_value=mock_conn), \
+             patch("main.fetch_bars", return_value=bars), \
+             patch("main.upsert_features") as mock_upsert:
+            resp = app_client.post("/features/build", json={"symbols": ["SPY"], "days": 10})
+
+        assert resp.status_code == 200
+        assert resp.json()["SPY"]["status"] == "insufficient_data"
+        mock_upsert.assert_not_called()
+
     def test_build_endpoint_computes_and_upserts_rows(self, app_client):
         bars = _make_bars_df()
         merged = _make_bars_with_sharadar()
@@ -183,6 +198,22 @@ class TestApiEndpoints:
         assert body["SPY"]["rows"] > 0
         mock_upsert.assert_called_once()
 
+    def test_build_endpoint_returns_error_when_merge_fails(self, app_client):
+        bars = _make_bars_df()
+        mock_conn = _MockConn()
+
+        with patch("main.get_conn", return_value=mock_conn), \
+             patch("main.fetch_bars", return_value=bars), \
+             patch("main.merge_sharadar_features", side_effect=RuntimeError("boom")), \
+             patch("main.upsert_features") as mock_upsert:
+            resp = app_client.post("/features/build", json={"symbols": ["SPY"], "days": 80})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["SPY"]["status"] == "error"
+        assert "boom" in body["SPY"]["error"]
+        mock_upsert.assert_not_called()
+
     def test_latest_endpoint_returns_state_vector_and_features(self, app_client):
         bars = _make_bars_df()
         merged = _make_bars_with_sharadar()
@@ -198,6 +229,27 @@ class TestApiEndpoints:
         assert body["symbol"] == "SPY"
         assert len(body["state_vector"]) == len(ALL_FEATURE_COLS)
         assert set(body["features"].keys()) == set(ALL_FEATURE_COLS)
+
+    def test_latest_endpoint_returns_404_for_insufficient_data(self, app_client):
+        mock_conn = _MockConn()
+
+        with patch("main.get_conn", return_value=mock_conn), \
+             patch("main.fetch_bars", return_value=_make_bars_df(n=12)):
+            resp = app_client.get("/features/latest/SPY")
+
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Insufficient data"
+
+    def test_latest_endpoint_returns_500_when_merge_fails(self, app_client):
+        mock_conn = _MockConn()
+
+        with patch("main.get_conn", return_value=mock_conn), \
+             patch("main.fetch_bars", return_value=_make_bars_df()), \
+             patch("main.merge_sharadar_features", side_effect=RuntimeError("merge failed")):
+            resp = app_client.get("/features/latest/SPY")
+
+        assert resp.status_code == 500
+        assert "merge failed" in resp.json()["detail"]
 
     def test_availability_endpoint_returns_feature_and_bar_counts(self, app_client):
         mock_conn = _MockConn()
@@ -215,3 +267,25 @@ class TestApiEndpoints:
 
         assert resp.status_code == 200
         assert resp.json() == {"SPY": {"feature_rows": 41, "bar_rows": 50}}
+
+    def test_availability_endpoint_supports_multiple_symbols(self, app_client):
+        mock_conn = _MockConn()
+        read_results = [
+            pd.DataFrame([{"feature_count": 41}]),
+            pd.DataFrame([{"bar_count": 50}]),
+            pd.DataFrame([{"feature_count": 12}]),
+            pd.DataFrame([{"bar_count": 19}]),
+        ]
+
+        with patch("main.get_conn", return_value=mock_conn), \
+             patch("pandas.read_sql", side_effect=read_results):
+            resp = app_client.get(
+                "/features/availability",
+                params={"symbols": "SPY,QQQ", "start_date": "2024-01-01", "end_date": "2024-03-31"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "SPY": {"feature_rows": 41, "bar_rows": 50},
+            "QQQ": {"feature_rows": 12, "bar_rows": 19},
+        }
