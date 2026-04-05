@@ -1,4 +1,5 @@
 import os
+import sys
 import io
 import json
 import hashlib
@@ -17,6 +18,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -75,15 +79,6 @@ def build_walk_forward_splits(
     return splits
 
 
-TECHNICAL_COLS = [
-    "ret_1d", "ret_2d", "ret_5d", "ret_10d", "ret_21d",
-    "rsi", "macd", "atr", "stoch", "ultosc",
-]
-SHARADAR_COLS = [
-    "pe", "pb", "ps", "evebitda", "marketcap_log",
-    "roe", "roa", "debt_equity", "revenue_growth", "fcf_yield",
-]
-ALL_FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS
 
 
 def fetch_features(symbols: list[str], start_date: str, end_date: str) -> pd.DataFrame:

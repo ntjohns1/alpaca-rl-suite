@@ -13,8 +13,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from trading_env import (
     TradingEnvironment, DataSource,
-    TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS,
 )
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "shared"))
+from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -113,6 +115,41 @@ class TestDataSourcePrecomputed:
         df = df.drop(columns=["pe", "pb"])  # simulate missing
         ds = DataSource(df=df, feature_mode="precomputed")
         assert ds.data.shape[1] == len(ALL_FEATURE_COLS)
+
+    def test_inf_in_sharadar_cols_replaced(self):
+        """Bug 3: inf in SHARADAR cols should be replaced with 0, not survive as NaN."""
+        df = _make_precomputed_df(300)
+        df.iloc[10, df.columns.get_loc("pe")] = np.inf
+        df.iloc[20, df.columns.get_loc("roe")] = -np.inf
+        ds = DataSource(df=df, feature_mode="precomputed")
+        assert not ds.data.isnull().any().any()
+
+    def test_observations_are_fully_scaled(self):
+        """Bug 1: All features in the observation vector should be scaled (no raw ret_1d leak)."""
+        ds = DataSource(df=_make_precomputed_df(300), feature_mode="precomputed", normalize=True)
+        # After z-scaling, mean should be ~0 and std ~1 for each column
+        means = ds.data.mean()
+        for col in ALL_FEATURE_COLS:
+            assert abs(means[col]) < 0.1, f"{col} mean not near 0: {means[col]}"
+
+
+class TestFeatureModeValidation:
+    def test_invalid_feature_mode_raises(self):
+        with pytest.raises(ValueError, match="Invalid feature_mode"):
+            DataSource(df=_make_ohlcv_df(300), feature_mode="invalid")
+
+    def test_invalid_feature_mode_env_raises(self):
+        with pytest.raises(ValueError, match="Invalid feature_mode"):
+            TradingEnvironment(df=_make_ohlcv_df(300), feature_mode="computed")
+
+    def test_valid_modes_accepted(self):
+        for mode in VALID_FEATURE_MODES:
+            if mode == "compute":
+                df = _make_ohlcv_df(300)
+            else:
+                df = _make_precomputed_df(300)
+            ds = DataSource(df=df, feature_mode=mode)
+            assert ds.data is not None
 
 
 # ─── TradingEnvironment ──────────────────────────────────────────────────────

@@ -4,23 +4,18 @@ Adapted from 22_deep_reinforcement_learning/trading_env.py
 Changes: loads from PostgreSQL/parquet instead of assets.h5
 """
 import logging
+import sys
+import os
 import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
 from sklearn.preprocessing import scale
 
-log = logging.getLogger(__name__)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
 
-TECHNICAL_COLS = [
-    "ret_1d", "ret_2d", "ret_5d", "ret_10d", "ret_21d",
-    "rsi", "macd", "atr", "stoch", "ultosc",
-]
-SHARADAR_COLS = [
-    "pe", "pb", "ps", "evebitda", "marketcap_log",
-    "roe", "roa", "debt_equity", "revenue_growth", "fcf_yield",
-]
-ALL_FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS
+log = logging.getLogger(__name__)
 
 
 class DataSource:
@@ -41,6 +36,11 @@ class DataSource:
             compute mode: must contain close, high, low columns.
         feature_mode: "precomputed" or "compute"
         """
+        if feature_mode not in VALID_FEATURE_MODES:
+            raise ValueError(
+                f"Invalid feature_mode '{feature_mode}'. "
+                f"Must be one of {VALID_FEATURE_MODES}"
+            )
         self.trading_days = trading_days
         self.normalize = normalize
         self.feature_mode = feature_mode
@@ -78,7 +78,8 @@ class DataSource:
                 df["high"], df["low"], df["close"]
             ).ultimate_oscillator()
         else:
-            # Precomputed mode: fill NaN in SHARADAR columns with 0
+            # Precomputed mode: replace inf before fillna so inf doesn't survive
+            df = df.replace([np.inf, -np.inf], np.nan)
             sharadar_present = [c for c in SHARADAR_COLS if c in df.columns]
             if sharadar_present:
                 df[sharadar_present] = df[sharadar_present].fillna(0)
@@ -90,10 +91,10 @@ class DataSource:
 
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=TECHNICAL_COLS)
 
-        r = df["ret_1d"].copy()
+        # Store raw ret_1d separately for reward signal, then scale all features
+        self._ret_1d = df["ret_1d"].copy()
         if self.normalize:
             df[self._active_cols] = scale(df[self._active_cols])
-        df["ret_1d"] = r  # don't scale returns — used for reward
         return df[self._active_cols]
 
     def reset(self):
@@ -102,8 +103,9 @@ class DataSource:
         self.step = 0
 
     def take_step(self):
-        obs = self.data.iloc[self.offset + self.step].values
-        market_return = self.data.iloc[self.offset + self.step]["ret_1d"]
+        idx = self.offset + self.step
+        obs = self.data.iloc[idx].values
+        market_return = self._ret_1d.iloc[idx]
         self.step += 1
         done = self.step > self.trading_days
         return obs, market_return, done
@@ -183,7 +185,7 @@ class TradingEnvironment(gym.Env):
         trading_days: int = 252,
         trading_cost_bps: float = 1e-3,
         time_cost_bps: float = 1e-4,
-        **kwargs,
+        feature_mode: str = "precomputed",
     ):
         super().__init__()
         self.trading_days     = trading_days
@@ -191,7 +193,7 @@ class TradingEnvironment(gym.Env):
         self.time_cost_bps    = time_cost_bps
 
         self.data_source = DataSource(df, trading_days=trading_days,
-                                       feature_mode=kwargs.get("feature_mode", "precomputed"))
+                                       feature_mode=feature_mode)
         self.simulator   = TradingSimulator(
             steps=trading_days,
             trading_cost_bps=trading_cost_bps,

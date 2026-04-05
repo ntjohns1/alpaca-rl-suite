@@ -1,4 +1,5 @@
 import os
+import sys
 import math
 import logging
 from contextlib import asynccontextmanager
@@ -13,6 +14,9 @@ import psycopg2
 from psycopg2.extras import execute_values
 import ta
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS
+
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
@@ -22,19 +26,6 @@ FEATURE_BUILDER_PORT = int(os.getenv("FEATURE_BUILDER_PORT", "8002"))
 
 def get_conn():
     return psycopg2.connect(DATABASE_URL)
-
-
-TECHNICAL_COLS = [
-    "ret_1d","ret_2d","ret_5d","ret_10d","ret_21d",
-    "rsi","macd","atr","stoch","ultosc",
-]
-
-SHARADAR_COLS = [
-    "pe","pb","ps","evebitda","marketcap_log",
-    "roe","roa","debt_equity","revenue_growth","fcf_yield",
-]
-
-ALL_FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS
 
 
 # ─────────────────────────────────────────
