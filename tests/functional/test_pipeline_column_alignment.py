@@ -281,6 +281,7 @@ def test_main_kaggle_notebook_feature_lists_match_shared_contract():
 
     assert notebook_technical == TECHNICAL_COLS
     assert notebook_sharadar == SHARADAR_COLS
+    assert "FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS" in source
 
 
 def test_kernel_setup_notebook_feature_lists_match_shared_contract():
@@ -290,6 +291,7 @@ def test_kernel_setup_notebook_feature_lists_match_shared_contract():
 
     assert notebook_technical == TECHNICAL_COLS
     assert notebook_sharadar == SHARADAR_COLS
+    assert "FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS" in source
     assert "import ta" not in source
 
 

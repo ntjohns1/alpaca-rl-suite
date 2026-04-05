@@ -4,23 +4,35 @@ DELETE FROM sharadar_sf1 WHERE ticker IN ('SPY', 'QQQ');
 DELETE FROM dataset_manifest WHERE name LIKE 'integration-%';
 DELETE FROM bar_1d WHERE symbol IN ('SPY', 'QQQ');
 
+WITH business_days AS (
+    SELECT
+        trading_day,
+        ROW_NUMBER() OVER (ORDER BY trading_day) - 1 AS idx
+    FROM (
+        SELECT (DATE '2024-01-01' + (i * INTERVAL '1 day'))::date AS trading_day
+        FROM generate_series(0, 179) AS gs(i)
+    ) dates
+    WHERE EXTRACT(ISODOW FROM trading_day) < 6
+    ORDER BY trading_day
+    LIMIT 120
+)
 INSERT INTO bar_1d (
     time, symbol, open, high, low, close, volume, vwap, trade_count, source, closeadj, closeunadj
 )
 SELECT
-    (DATE '2024-01-01' + (i * INTERVAL '1 day'))::timestamptz,
+    business_days.trading_day::timestamptz,
     sym.symbol,
-    100 + i,
-    101 + i,
-    99 + i,
-    100.5 + i,
-    1000000 + (i * 1000),
-    100.25 + i,
-    100 + i,
+    100 + business_days.idx,
+    101 + business_days.idx,
+    99 + business_days.idx,
+    100.5 + business_days.idx,
+    1000000 + (business_days.idx * 1000),
+    100.25 + business_days.idx,
+    100 + business_days.idx,
     'integration',
-    100.5 + i,
-    100.5 + i
-FROM generate_series(0, 119) AS gs(i)
+    100.5 + business_days.idx,
+    100.5 + business_days.idx
+FROM business_days
 CROSS JOIN (VALUES ('SPY'), ('QQQ')) AS sym(symbol)
 ON CONFLICT (time, symbol) DO UPDATE SET
     open = EXCLUDED.open,
@@ -34,21 +46,33 @@ ON CONFLICT (time, symbol) DO UPDATE SET
     closeadj = EXCLUDED.closeadj,
     closeunadj = EXCLUDED.closeunadj;
 
+WITH business_days AS (
+    SELECT
+        trading_day,
+        ROW_NUMBER() OVER (ORDER BY trading_day) - 1 AS idx
+    FROM (
+        SELECT (DATE '2024-01-01' + (i * INTERVAL '1 day'))::date AS trading_day
+        FROM generate_series(0, 179) AS gs(i)
+    ) dates
+    WHERE EXTRACT(ISODOW FROM trading_day) < 6
+    ORDER BY trading_day
+    LIMIT 120
+)
 INSERT INTO sharadar_daily (
     ticker, date, lastupdated, ev, evebit, evebitda, marketcap, pb, pe, ps
 )
 SELECT
     sym.symbol,
-    (DATE '2024-01-01' + (i * INTERVAL '1 day'))::date,
-    (DATE '2024-01-01' + (i * INTERVAL '1 day'))::date,
-    1000000000 + (i * 1000000),
-    12.5 + (i * 0.01),
-    14.0 + (i * 0.01),
-    50000000000 + (i * 10000000),
-    4.0 + (i * 0.01),
-    22.0 + (i * 0.02),
-    5.0 + (i * 0.01)
-FROM generate_series(0, 119) AS gs(i)
+    business_days.trading_day,
+    business_days.trading_day,
+    1000000000 + (business_days.idx * 1000000),
+    12.5 + (business_days.idx * 0.01),
+    14.0 + (business_days.idx * 0.01),
+    50000000000 + (business_days.idx * 10000000),
+    4.0 + (business_days.idx * 0.01),
+    22.0 + (business_days.idx * 0.02),
+    5.0 + (business_days.idx * 0.01)
+FROM business_days
 CROSS JOIN (VALUES ('SPY'), ('QQQ')) AS sym(symbol)
 ON CONFLICT (date, ticker) DO UPDATE SET
     lastupdated = EXCLUDED.lastupdated,

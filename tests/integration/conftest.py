@@ -83,7 +83,7 @@ def s3_client(integration_env):
     return get_s3_client()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def built_features(integration_env):
     resp = requests.post(
         f"{FEATURE_BUILDER_URL}/features/build",
@@ -94,7 +94,7 @@ def built_features(integration_env):
     return resp.json()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def built_dataset(integration_env, built_features):
     resp = requests.post(
         f"{DATASET_BUILDER_URL}/datasets/build",

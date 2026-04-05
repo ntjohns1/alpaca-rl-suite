@@ -68,6 +68,24 @@ jobs:
             echo "No tests directory found for ${{ matrix.service }}, skipping"
           fi
 
+  # ─── Phase 2: Column alignment contract suite ───────────────────────
+  column-alignment:
+    name: Phase 2 column-alignment contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install test dependencies
+        run: |
+          pip install pytest numpy pandas pyarrow
+
+      - name: Run phase 2 contract tests
+        run: pytest tests/functional/test_pipeline_column_alignment.py -q
   # ─── Docker build validation ─────────────────────────────────────────
   docker-compose-validate:
     name: Validate docker-compose

@@ -1,0 +1,33 @@
+name: Integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  docker-integration:
+    name: Phase 3 docker integration harness
+    runs-on: [self-hosted, vps]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install integration test dependencies
+        run: |
+          pip install pytest requests boto3 psycopg2-binary pyarrow
+
+      - name: Start slim integration stack
+        run: docker compose -f tests/integration/docker-compose.test.yml up -d --build
+
+      - name: Run Phase 3 pipeline integration tests
+        run: pytest tests/integration/ -v
+
+      - name: Stop slim integration stack
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.test.yml down -v
