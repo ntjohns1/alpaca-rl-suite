@@ -88,23 +88,31 @@ def kaggle_request(method: str, endpoint: str, **kwargs):
 # Dataset Export
 # ─────────────────────────────────────────
 def export_training_dataset(symbol: str, output_path: str) -> dict:
-    """Export bar data from PostgreSQL to CSV for Kaggle upload."""
+    """Export pre-computed feature rows (20 features + close) to CSV for Kaggle upload."""
     with get_conn() as conn:
         df = pd.read_sql(
-            """SELECT time::date as date, open::float, high::float,
-                      low::float, close::float, volume::bigint
-               FROM bar_1d WHERE symbol=%s ORDER BY time""",
+            """SELECT f.time::date as date,
+                      f.ret_1d, f.ret_2d, f.ret_5d, f.ret_10d, f.ret_21d,
+                      f.rsi, f.macd, f.atr, f.stoch, f.ultosc,
+                      f.pe, f.pb, f.ps, f.evebitda, f.marketcap_log,
+                      f.roe, f.roa, f.debt_equity, f.revenue_growth, f.fcf_yield,
+                      b.close::float as close
+               FROM feature_row f
+               JOIN bar_1d b USING (time, symbol)
+               WHERE f.symbol=%s
+               ORDER BY f.time""",
             conn, params=(symbol,),
         )
     if len(df) < 300:
-        raise ValueError(f"Insufficient data for {symbol}: {len(df)} bars")
+        raise ValueError(f"Insufficient data for {symbol}: {len(df)} feature rows")
     df.to_csv(output_path, index=False)
-    log.info(f"Exported {len(df)} bars for {symbol} to {output_path}")
+    log.info(f"Exported {len(df)} feature rows for {symbol} to {output_path}")
     return {
         "symbol": symbol,
         "rows": len(df),
         "date_range": f"{df['date'].min()} to {df['date'].max()}",
         "path": output_path,
+        "feature_version": "v2",
     }
 
 

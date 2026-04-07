@@ -4,12 +4,16 @@ Adapted from 22_deep_reinforcement_learning/trading_env.py
 Changes: loads from PostgreSQL/parquet instead of assets.h5
 """
 import logging
+import sys
+import os
 import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
 from sklearn.preprocessing import scale
-import ta
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
 
 log = logging.getLogger(__name__)
 
@@ -17,22 +21,33 @@ log = logging.getLogger(__name__)
 class DataSource:
     """
     Loads & preprocesses daily bar data.
-    Features mirror the original trading_env.py DataSource:
-      returns, ret_2, ret_5, ret_10, ret_21,
-      rsi, macd, atr, stoch, ultosc
+    Supports two modes:
+      - "precomputed" (default): expects 20 pre-computed feature columns from feature-builder.
+      - "compute": recomputes 10 technical indicators from OHLCV (requires `ta` library).
     """
 
-    FEATURE_COLS = [
-        "returns", "ret_2", "ret_5", "ret_10", "ret_21",
-        "rsi", "macd", "atr", "stoch", "ultosc",
-    ]
+    FEATURE_COLS = ALL_FEATURE_COLS  # 20 features
 
-    def __init__(self, df: pd.DataFrame, trading_days: int = 252, normalize: bool = True):
+    def __init__(self, df: pd.DataFrame, trading_days: int = 252,
+                 normalize: bool = True, feature_mode: str = "precomputed"):
         """
-        df: DataFrame with columns [close, high, low, volume] indexed by date.
+        df: DataFrame indexed by date.
+            precomputed mode: must contain ret_1d..ultosc + SHARADAR cols + close.
+            compute mode: must contain close, high, low columns.
+        feature_mode: "precomputed" or "compute"
         """
+        if feature_mode not in VALID_FEATURE_MODES:
+            raise ValueError(
+                f"Invalid feature_mode '{feature_mode}'. "
+                f"Must be one of {VALID_FEATURE_MODES}"
+            )
         self.trading_days = trading_days
         self.normalize = normalize
+        self.feature_mode = feature_mode
+        if feature_mode == "compute":
+            self._active_cols = TECHNICAL_COLS
+        else:
+            self._active_cols = ALL_FEATURE_COLS
         self.data = self._preprocess(df)
         self.min_values = self.data.min()
         self.max_values = self.data.max()
@@ -42,33 +57,45 @@ class DataSource:
     def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy().sort_index()
 
-        df["returns"] = df["close"].pct_change()
-        df["ret_2"]   = df["close"].pct_change(2)
-        df["ret_5"]   = df["close"].pct_change(5)
-        df["ret_10"]  = df["close"].pct_change(10)
-        df["ret_21"]  = df["close"].pct_change(21)
+        if self.feature_mode == "compute":
+            import ta as _ta
+            df["ret_1d"]  = df["close"].pct_change()
+            df["ret_2d"]  = df["close"].pct_change(2)
+            df["ret_5d"]  = df["close"].pct_change(5)
+            df["ret_10d"] = df["close"].pct_change(10)
+            df["ret_21d"] = df["close"].pct_change(21)
+            df["rsi"]     = _ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+            macd_obj      = _ta.trend.MACD(df["close"])
+            df["macd"]    = macd_obj.macd_signal()
+            df["atr"]     = _ta.volatility.AverageTrueRange(
+                df["high"], df["low"], df["close"], window=14
+            ).average_true_range()
+            stoch_obj     = _ta.momentum.StochasticOscillator(
+                df["high"], df["low"], df["close"], window=14
+            )
+            df["stoch"]   = stoch_obj.stoch_signal() - stoch_obj.stoch()
+            df["ultosc"]  = _ta.momentum.UltimateOscillator(
+                df["high"], df["low"], df["close"]
+            ).ultimate_oscillator()
+        else:
+            # Precomputed mode: replace inf before fillna so inf doesn't survive
+            df = df.replace([np.inf, -np.inf], np.nan)
+            sharadar_present = [c for c in SHARADAR_COLS if c in df.columns]
+            if sharadar_present:
+                df[sharadar_present] = df[sharadar_present].fillna(0)
+            # Fill any missing feature columns with 0
+            for c in self._active_cols:
+                if c not in df.columns:
+                    log.warning(f"Missing feature column '{c}', filling with 0")
+                    df[c] = 0.0
 
-        df["rsi"]    = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-        macd_obj     = ta.trend.MACD(df["close"])
-        df["macd"]   = macd_obj.macd_signal()
-        df["atr"]    = ta.volatility.AverageTrueRange(
-            df["high"], df["low"], df["close"], window=14
-        ).average_true_range()
-        stoch_obj    = ta.momentum.StochasticOscillator(
-            df["high"], df["low"], df["close"], window=14
-        )
-        df["stoch"]  = stoch_obj.stoch_signal() - stoch_obj.stoch()
-        df["ultosc"] = ta.momentum.UltimateOscillator(
-            df["high"], df["low"], df["close"]
-        ).ultimate_oscillator()
+        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=TECHNICAL_COLS)
 
-        df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=self.FEATURE_COLS)
-
-        r = df["returns"].copy()
+        # Store raw ret_1d separately for reward signal, then scale all features
+        self._ret_1d = df["ret_1d"].copy()
         if self.normalize:
-            df[self.FEATURE_COLS] = scale(df[self.FEATURE_COLS])
-        df["returns"] = r  # don't scale returns — used for reward
-        return df[self.FEATURE_COLS]
+            df[self._active_cols] = scale(df[self._active_cols])
+        return df[self._active_cols]
 
     def reset(self):
         high = len(self.data) - self.trading_days
@@ -76,8 +103,9 @@ class DataSource:
         self.step = 0
 
     def take_step(self):
-        obs = self.data.iloc[self.offset + self.step].values
-        market_return = self.data.iloc[self.offset + self.step]["returns"]
+        idx = self.offset + self.step
+        obs = self.data.iloc[idx].values
+        market_return = self._ret_1d.iloc[idx]
         self.step += 1
         done = self.step > self.trading_days
         return obs, market_return, done
@@ -157,20 +185,22 @@ class TradingEnvironment(gym.Env):
         trading_days: int = 252,
         trading_cost_bps: float = 1e-3,
         time_cost_bps: float = 1e-4,
+        feature_mode: str = "precomputed",
     ):
         super().__init__()
         self.trading_days     = trading_days
         self.trading_cost_bps = trading_cost_bps
         self.time_cost_bps    = time_cost_bps
 
-        self.data_source = DataSource(df, trading_days=trading_days)
+        self.data_source = DataSource(df, trading_days=trading_days,
+                                       feature_mode=feature_mode)
         self.simulator   = TradingSimulator(
             steps=trading_days,
             trading_cost_bps=trading_cost_bps,
             time_cost_bps=time_cost_bps,
         )
 
-        n_features = len(DataSource.FEATURE_COLS)
+        n_features = len(self.data_source._active_cols)
         self.action_space      = spaces.Discrete(3)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(n_features,), dtype=np.float32

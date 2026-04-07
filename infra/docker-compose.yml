@@ -267,8 +267,8 @@ services:
   # ─── Python services ──────────────────────────────────────────────────
   feature-builder:
     build:
-      context: ../services/feature-builder
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/feature-builder/Dockerfile
     container_name: alpaca_rl_feature_builder
     env_file: ../.env
     ports:
@@ -280,8 +280,8 @@ services:
 
   dataset-builder:
     build:
-      context: ../services/dataset-builder
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/dataset-builder/Dockerfile
     container_name: alpaca_rl_dataset_builder
     env_file: ../.env
     ports:
@@ -310,8 +310,8 @@ services:
 
   rl-train:
     build:
-      context: ../services/rl-train
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/rl-train/Dockerfile
     container_name: alpaca_rl_rl_train
     env_file: ../.env
     ports:

@@ -87,11 +87,32 @@ class TestUpdateKaggleJob:
 # ─── Business logic ───────────────────────────────────────────────────────────
 
 class TestExportTrainingDataset:
+    @staticmethod
+    def _make_feature_export_df(n: int) -> pd.DataFrame:
+        """Helper to create a DataFrame matching the new feature-row export shape."""
+        import numpy as np
+        rng = np.random.default_rng(42)
+        return pd.DataFrame({
+            "date":   pd.date_range("2020-01-01", periods=n),
+            "ret_1d": rng.normal(0, 0.01, n), "ret_2d": rng.normal(0, 0.01, n),
+            "ret_5d": rng.normal(0, 0.01, n), "ret_10d": rng.normal(0, 0.01, n),
+            "ret_21d": rng.normal(0, 0.01, n),
+            "rsi": rng.uniform(20, 80, n), "macd": rng.normal(0, 0.5, n),
+            "atr": rng.uniform(0.5, 3, n), "stoch": rng.uniform(10, 90, n),
+            "ultosc": rng.uniform(20, 80, n),
+            "pe": rng.uniform(10, 40, n), "pb": rng.uniform(1, 10, n),
+            "ps": rng.uniform(1, 15, n), "evebitda": rng.uniform(5, 25, n),
+            "marketcap_log": rng.uniform(20, 28, n),
+            "roe": rng.uniform(-0.1, 0.4, n), "roa": rng.uniform(-0.05, 0.2, n),
+            "debt_equity": rng.uniform(0, 3, n),
+            "revenue_growth": rng.uniform(-0.2, 0.5, n),
+            "fcf_yield": rng.uniform(-0.05, 0.15, n),
+            "close": [100.5] * n,
+        })
+
     def test_raises_on_insufficient_data(self, mock_db_conn):
         mock_conn, _ = mock_db_conn
-        small_df = pd.DataFrame({"date": range(10), "open": range(10),
-                                  "high": range(10), "low": range(10),
-                                  "close": range(10), "volume": range(10)})
+        small_df = self._make_feature_export_df(10)
         with patch("main.get_conn") as mock_gc:
             mock_gc.return_value.__enter__ = lambda s: s
             mock_gc.return_value.__exit__ = MagicMock(return_value=False)
@@ -101,12 +122,7 @@ class TestExportTrainingDataset:
                     main.export_training_dataset("SPY", "/tmp/test.csv")
 
     def test_writes_csv_for_adequate_data(self, tmp_path, mock_db_conn):
-        df = pd.DataFrame({
-            "date":   pd.date_range("2020-01-01", periods=400),
-            "open":   [100.0] * 400, "high": [101.0] * 400,
-            "low":    [99.0]  * 400, "close": [100.5] * 400,
-            "volume": [1000]  * 400,
-        })
+        df = self._make_feature_export_df(400)
         out = str(tmp_path / "data.csv")
         with patch("main.get_conn") as mock_gc, \
              patch("pandas.read_sql", return_value=df):
@@ -116,6 +132,7 @@ class TestExportTrainingDataset:
             result = main.export_training_dataset("SPY", out)
         assert result["rows"] == 400
         assert result["symbol"] == "SPY"
+        assert result["feature_version"] == "v2"
 
 
 class TestKaggleRequest:

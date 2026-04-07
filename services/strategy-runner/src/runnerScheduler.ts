@@ -82,10 +82,9 @@ export class RunnerScheduler {
     const bars = await res.json() as any[];
     if (bars.length < 22) return null;
 
-    // Mirror the state vector from trading_env.py:
-    // [returns, ret_2, ret_5, ret_10, ret_21, rsi, macd, atr, stoch, ultosc]
-    // For the runner we use simple normalized returns as a placeholder;
-    // the feature-builder service computes the full indicator set.
+    // 20-element state vector from feature-builder (10 technical + 10 SHARADAR).
+    // The feature-builder is the single source of truth; no fallback —
+    // a partial/fake vector would produce garbage predictions.
     const featRes = await fetch(
       `${this.config.FEATURE_BUILDER_URL}/features/latest/${symbol}`,
     ).catch(() => null);
@@ -95,14 +94,8 @@ export class RunnerScheduler {
       return feat.state_vector ?? null;
     }
 
-    // Fallback: return simple 5-day return vector if feature service unavailable
-    const closes = bars.map((b: any) => Number(b.close)).reverse();
-    const ret1  = (closes[0] - closes[1]) / closes[1];
-    const ret2  = (closes[0] - closes[2]) / closes[2];
-    const ret5  = (closes[0] - closes[5]) / closes[5];
-    const ret10 = (closes[0] - closes[10]) / closes[10];
-    const ret21 = (closes[0] - closes[21]) / closes[21];
-    return [ret1, ret2, ret5, ret10, ret21, 0, 0, 0, 0, 0];
+    console.warn(`[runner] feature-builder unavailable for ${symbol}, skipping inference`);
+    return null;
   }
 
   private allocate(scores: SymbolScore[]): Array<{symbol: string; side: 'buy'|'sell'; notional: number}> {

@@ -1,0 +1,59 @@
+name: Integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+
+jobs:
+  docker-integration:
+    name: Phase 3 docker integration
+    runs-on: [self-hosted, linux, vps]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install integration test dependencies
+        run: |
+          pip install pytest boto3 psycopg2-binary requests pyarrow
+
+      - name: Validate integration docker-compose config
+        run: docker compose -f tests/integration/docker-compose.test.yml config --quiet
+
+      - name: Start integration stack
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-ci-${{ github.run_id }}
+        run: docker compose -f tests/integration/docker-compose.test.yml up -d --build
+
+      - name: Run integration tests
+        run: pytest tests/integration -q
+
+      - name: Collect Docker logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/integration/docker-compose.test.yml logs \
+            --no-color --timestamps \
+            > /tmp/integration-docker-logs.txt 2>&1 || true
+
+      - name: Upload Docker logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-docker-logs-${{ github.run_id }}
+          path: /tmp/integration-docker-logs.txt
+          retention-days: 7
+
+      - name: Tear down integration stack
+        if: always()
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-ci-${{ github.run_id }}
+        run: docker compose -f tests/integration/docker-compose.test.yml down -v
+
+      - name: Prune stale Docker build cache
+        if: always()
+        run: docker builder prune -f --keep-storage 5gb || true
