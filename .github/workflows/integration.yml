@@ -26,11 +26,34 @@ jobs:
         run: docker compose -f tests/integration/docker-compose.test.yml config --quiet
 
       - name: Start integration stack
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-ci-${{ github.run_id }}
         run: docker compose -f tests/integration/docker-compose.test.yml up -d --build
 
       - name: Run integration tests
         run: pytest tests/integration -q
 
+      - name: Collect Docker logs on failure
+        if: failure()
+        run: |
+          docker compose -f tests/integration/docker-compose.test.yml logs \
+            --no-color --timestamps \
+            > /tmp/integration-docker-logs.txt 2>&1 || true
+
+      - name: Upload Docker logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-docker-logs-${{ github.run_id }}
+          path: /tmp/integration-docker-logs.txt
+          retention-days: 7
+
       - name: Tear down integration stack
         if: always()
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-ci-${{ github.run_id }}
         run: docker compose -f tests/integration/docker-compose.test.yml down -v
+
+      - name: Prune stale Docker build cache
+        if: always()
+        run: docker builder prune -f --keep-storage 5gb || true
