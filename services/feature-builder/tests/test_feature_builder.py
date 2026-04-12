@@ -85,7 +85,7 @@ class TestComputeFeatures:
         df = _make_bars_with_sharadar()
         original_len = len(compute_features(df))
         df.loc[df.index[30], "close"] = np.nan
-        df.loc[df.index[40], "pe"] = np.nan
+        df.loc[df.index[70], "pe"] = np.nan
 
         feat_df = compute_features(df)
 
