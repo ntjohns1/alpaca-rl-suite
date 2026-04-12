@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .env
+.env.production
 *.env.local
 *.env.*.local
 .DS_Store
@@ -25,3 +26,5 @@ docs/
 kaggle/data/
 reference/
 actions-runner/
+infra/scripts/generate-secrets.sh
+infra/.env.production.template

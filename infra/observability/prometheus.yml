@@ -11,66 +11,69 @@ rule_files:
   - '/etc/prometheus/alerts.yml'
 
 scrape_configs:
+  # ─── Node.js trading services (server_6: role=trading) ────────────────
   - job_name: 'api-gateway'
     static_configs:
-      - targets: ['host.docker.internal:3000']
+      - targets: ['api-gateway:3000']
     metrics_path: '/metrics'
 
   - job_name: 'auth'
     static_configs:
-      - targets: ['host.docker.internal:3001']
+      - targets: ['auth:3001']
     metrics_path: '/metrics'
 
   - job_name: 'alpaca-adapter'
     static_configs:
-      - targets: ['host.docker.internal:3002']
+      - targets: ['alpaca-adapter:3002']
     metrics_path: '/metrics'
 
   - job_name: 'market-ingest'
     static_configs:
-      - targets: ['host.docker.internal:3003']
-    metrics_path: '/metrics'
-
-  - job_name: 'portfolio'
-    static_configs:
-      - targets: ['host.docker.internal:3004']
+      - targets: ['market-ingest:3003']
     metrics_path: '/metrics'
 
   - job_name: 'orders'
     static_configs:
-      - targets: ['host.docker.internal:3005']
+      - targets: ['orders:3004']
     metrics_path: '/metrics'
 
   - job_name: 'risk'
     static_configs:
-      - targets: ['host.docker.internal:3006']
+      - targets: ['risk:3005']
+    metrics_path: '/metrics'
+
+  - job_name: 'portfolio'
+    static_configs:
+      - targets: ['portfolio:3006']
     metrics_path: '/metrics'
 
   - job_name: 'strategy-runner'
     static_configs:
-      - targets: ['host.docker.internal:3007']
+      - targets: ['strategy-runner:3007']
     metrics_path: '/metrics'
 
+  # ─── Python ML services (server_5: role=compute) ──────────────────────
   - job_name: 'backtest'
     static_configs:
-      - targets: ['host.docker.internal:8001']
+      - targets: ['backtest:8001']
     metrics_path: '/metrics'
 
   - job_name: 'feature-builder'
     static_configs:
-      - targets: ['host.docker.internal:8002']
+      - targets: ['feature-builder:8002']
     metrics_path: '/metrics'
 
   - job_name: 'rl-train'
     static_configs:
-      - targets: ['host.docker.internal:8004']
+      - targets: ['rl-train:8004']
     metrics_path: '/metrics'
 
   - job_name: 'rl-infer'
     static_configs:
-      - targets: ['host.docker.internal:8005']
+      - targets: ['rl-infer:8005']
     metrics_path: '/metrics'
 
+  # ─── Infrastructure (server_1: role=data) ─────────────────────────────
   - job_name: 'nats'
     static_configs:
       - targets: ['nats:8222']
