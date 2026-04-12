@@ -35,6 +35,8 @@ jobs:
 
       - name: Collect Docker logs on failure
         if: failure()
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-ci-${{ github.run_id }}
         run: |
           docker compose -f tests/integration/docker-compose.test.yml logs \
             --no-color --timestamps \

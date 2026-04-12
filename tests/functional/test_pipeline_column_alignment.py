@@ -339,3 +339,35 @@ def test_dataset_builder_parquet_schema_preserves_all_feature_columns():
     parquet_cols = table.column_names
     for col in ALL_FEATURE_COLS:
         assert col in parquet_cols, f"{col} missing from exported parquet schema"
+
+
+def test_kaggle_export_loads_as_datasource_with_correct_obs_shape():
+    """End-to-end: mock kaggle export CSV → DataSource → obs shape == (20,).
+    Proves the kaggle-orchestrator output is consumable by the training notebook."""
+    os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
+
+    # 1. Build a DataFrame matching kaggle export_training_dataset output schema
+    n = 400
+    rng = np.random.default_rng(99)
+    data = {
+        "date": pd.date_range("2023-01-01", periods=n, freq="B"),
+        "close": 100.0 * np.cumprod(1 + rng.normal(0.0003, 0.01, n)),
+    }
+    for i, col in enumerate(ALL_FEATURE_COLS):
+        data[col] = rng.normal(0, 1, n)
+    export_df = pd.DataFrame(data).set_index("date")
+
+    # 2. Load into trading_env DataSource in precomputed mode
+    env_module = load_module("trading_env_e2e_contract", TRADING_ENV_PATH)
+    ds = env_module.DataSource(df=export_df, feature_mode="precomputed")
+
+    assert ds.data.shape[1] == len(ALL_FEATURE_COLS), (
+        f"DataSource columns {ds.data.shape[1]} != expected {len(ALL_FEATURE_COLS)}"
+    )
+
+    # 3. Verify observation vector shape
+    ds.reset()
+    obs, market_return, done = ds.take_step()
+    assert obs.shape == (len(ALL_FEATURE_COLS),), (
+        f"Observation shape {obs.shape} != expected ({len(ALL_FEATURE_COLS)},)"
+    )

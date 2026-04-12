@@ -100,7 +100,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pytest numpy pandas pyarrow scikit-learn ta
+          pip install pytest numpy pandas pyarrow scikit-learn ta gymnasium
 
       - name: Run phase 2 contract tests
         run: pytest tests/functional/test_pipeline_column_alignment.py -q
