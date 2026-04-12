@@ -1,0 +1,669 @@
+# Docker Swarm stack file for 3-node deployment
+# Deploy with: docker stack deploy -c docker-stack.yml alpaca-rl
+#
+# Node labels required:
+#   server_1 (192.168.10.104): role=data     (Swarm Manager)
+#   server_5 (192.168.10.116): role=compute  (Swarm Worker)
+#   server_6 (192.168.10.105): role=trading  (Swarm Worker)
+#
+# Preserve infra/docker-compose.yml for local dev — this file is Swarm-only.
+
+version: "3.8"
+
+services:
+  # ═══════════════════════════════════════════════════════════════════════
+  # DATA NODE — server_1 (role=data)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: ${DB_USER:-rl_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME:-alpaca_rl}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == data
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+      restart_policy:
+        condition: any
+
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == data
+      resources:
+        limits:
+          memory: 128M
+        reservations:
+          memory: 32M
+      restart_policy:
+        condition: any
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == data
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+      restart_policy:
+        condition: any
+
+  temporal:
+    image: temporalio/auto-setup:1.24
+    ports:
+      - "7233:7233"
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=rl_user
+      - POSTGRES_PWD=${DB_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == data
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:8080
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == data
+      resources:
+        limits:
+          memory: 128M
+      restart_policy:
+        condition: any
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # TRADING NODE — server_6 (role=trading)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  auth:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/auth:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRES_IN: 24h
+      KEYCLOAK_URL: https://auth.nelsonjohns.com
+      KEYCLOAK_REALM: admin
+      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      AUTH_PORT: "3001"
+    ports:
+      - "3001:3001"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  alpaca-adapter:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/alpaca-adapter:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
+      ALPACA_STREAM_URL: ${ALPACA_STREAM_URL:-wss://stream.data.alpaca.markets}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      ALPACA_ADAPTER_PORT: "3002"
+    ports:
+      - "3002:3002"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  market-ingest:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/market-ingest:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      ALPACA_BASE_URL: https://paper-api.alpaca.markets
+      ALPACA_DATA_URL: https://data.alpaca.markets
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      MARKET_INGEST_PORT: "3003"
+    ports:
+      - "3003:3003"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  orders:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/orders:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      ORDERS_PORT: "3004"
+    ports:
+      - "3004:3004"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  risk:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/risk:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      MAX_DAILY_LOSS_USD: "1000"
+      MAX_POSITION_SIZE_PCT: "0.10"
+      KILL_SWITCH_ENABLED: "false"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      RISK_PORT: "3005"
+    ports:
+      - "3005:3005"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  portfolio:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/portfolio:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      PORTFOLIO_PORT: "3006"
+    ports:
+      - "3006:3006"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  strategy-runner:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/strategy-runner:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      TRADING_MODE: paper
+      STRATEGY_RUNNER_PORT: "3007"
+    ports:
+      - "3007:3007"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  api-gateway:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/api-gateway:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      API_GATEWAY_PORT: "3000"
+    ports:
+      - "3000:3000"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  web-ui:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/web-ui:latest
+    environment:
+      KAGGLE_SERVICE_URL: http://kaggle-orchestrator:8011
+      BACKTEST_SERVICE_URL: http://backtest:8001
+      RL_TRAIN_SERVICE_URL: http://rl-train:8004
+      DATASET_SERVICE_URL: http://dataset-builder:8003
+      DASHBOARD_SERVICE_URL: http://dashboard:8020
+      GRAFANA_URL: http://grafana:3000
+      GRAFANA_EXTERNAL_URL: https://grafana.nelsonjohns.com
+      KEYCLOAK_URL: https://auth.nelsonjohns.com
+      KEYCLOAK_REALM: admin
+      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      WEB_UI_PORT: "3200"
+    ports:
+      - "3200:3200"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  dashboard:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/dashboard:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      KAGGLE_SERVICE_URL: http://kaggle-orchestrator:8011
+      BACKTEST_SERVICE_URL: http://backtest:8001
+      RL_TRAIN_SERVICE_URL: http://rl-train:8004
+      DATASET_SERVICE_URL: http://dataset-builder:8003
+      DASHBOARD_PORT: "8020"
+    ports:
+      - "8020:8020"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == trading
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # COMPUTE + OBSERVABILITY NODE — server_5 (role=compute)
+  # ═══════════════════════════════════════════════════════════════════════
+
+  feature-builder:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/feature-builder:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      FEATURE_BUILDER_PORT: "8002"
+    ports:
+      - "8002:8002"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  dataset-builder:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/dataset-builder:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: alpaca-rl-artifacts
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATASET_BUILDER_PORT: "8003"
+    ports:
+      - "8003:8003"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  backtest:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/backtest:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: alpaca-rl-artifacts
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      BACKTEST_PORT: "8001"
+    ports:
+      - "8001:8001"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 1536M
+        reservations:
+          memory: 512M
+      restart_policy:
+        condition: any
+
+  rl-train:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/rl-train:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: alpaca-rl-artifacts
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      RL_TRAIN_PORT: "8004"
+    ports:
+      - "8004:8004"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  rl-infer:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/rl-infer:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: alpaca-rl-artifacts
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      RL_INFER_PORT: "8005"
+    ports:
+      - "8005:8005"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  temporal-worker:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/temporal-worker:latest
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_TASK_QUEUE: alpaca-rl-main
+      RL_TRAIN_URL: http://rl-train:8004
+      BACKTEST_URL: http://backtest:8001
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "8010:8010"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == data
+      resources:
+        limits:
+          memory: 384M
+        reservations:
+          memory: 128M
+      restart_policy:
+        condition: any
+
+  kaggle-orchestrator:
+    image: ghcr.io/ntjohns1/alpaca-rl-suite/kaggle-orchestrator:latest
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: alpaca-rl-artifacts
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY}
+      KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      KAGGLE_ORCHESTRATOR_PORT: "8011"
+    ports:
+      - "8011:8011"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+  # ─── Observability (role=compute / server_5) ──────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+    configs:
+      - source: prometheus-config
+        target: /etc/prometheus/prometheus.yml
+      - source: prometheus-alerts
+        target: /etc/prometheus/alerts.yml
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 384M
+        reservations:
+          memory: 128M
+      restart_policy:
+        condition: any
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    configs:
+      - source: alertmanager-config
+        target: /etc/alertmanager/alertmanager.yml
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 128M
+      restart_policy:
+        condition: any
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3100:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 384M
+        reservations:
+          memory: 128M
+      restart_policy:
+        condition: any
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    configs:
+      - source: otel-config
+        target: /etc/otelcol-contrib/config.yaml
+    networks:
+      - backend
+    deploy:
+      placement:
+        constraints:
+          - node.labels.role == compute
+      resources:
+        limits:
+          memory: 256M
+      restart_policy:
+        condition: any
+
+# ═══════════════════════════════════════════════════════════════════════
+# Networks, Volumes, Secrets, Configs
+# ═══════════════════════════════════════════════════════════════════════
+
+networks:
+  backend:
+    driver: overlay
+    attachable: true
+
+volumes:
+  postgres_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+
+configs:
+  prometheus-config:
+    file: ./observability/prometheus.yml
+  prometheus-alerts:
+    file: ./observability/alerts.yml
+  alertmanager-config:
+    file: ./observability/alertmanager.yml
+  otel-config:
+    file: ./observability/otel-collector.yml
