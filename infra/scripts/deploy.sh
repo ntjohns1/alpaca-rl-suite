@@ -74,10 +74,12 @@ for node_id in $(docker node ls --format '{{.ID}}'); do
 done
 
 ROLES_OK=true
+ALL_ROLES=$(docker node ls --format '{{.ID}}' | while read -r nid; do
+  docker node inspect "$nid" --format '{{index .Spec.Labels "role"}}' 2>/dev/null
+done)
+
 for required_role in data compute trading; do
-  if ! docker node ls --format '{{.ID}}' | while read nid; do
-    docker node inspect "$nid" --format '{{index .Spec.Labels "role"}}' 2>/dev/null
-  done | grep -q "$required_role"; then
+  if ! echo "$ALL_ROLES" | grep -q "$required_role"; then
     echo "WARNING: No node labeled role=$required_role"
     ROLES_OK=false
   fi
