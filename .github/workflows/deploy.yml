@@ -1,0 +1,125 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      skip_integration:
+        description: "Skip integration tests before deploying (for hotfixes)"
+        type: boolean
+        default: false
+
+jobs:
+  # ─── Gate: only proceed if CI succeeded ─────────────────────────────
+  gate:
+    name: Deployment gate
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      should_deploy: ${{ steps.check.outputs.deploy }}
+    steps:
+      - id: check
+        run: echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+  # ─── Integration tests (skippable for hotfixes) ────────────────────
+  integration-gate:
+    name: Integration tests
+    needs: gate
+    if: >-
+      needs.gate.outputs.should_deploy == 'true' &&
+      !(github.event_name == 'workflow_dispatch' && inputs.skip_integration)
+    runs-on: [self-hosted, linux, vps]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install integration test dependencies
+        run: pip install pytest boto3 psycopg2-binary requests pyarrow
+
+      - name: Validate integration docker-compose config
+        run: docker compose -f tests/integration/docker-compose.test.yml config --quiet
+
+      - name: Start integration stack
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-deploy-gate-${{ github.run_id }}
+        run: docker compose -f tests/integration/docker-compose.test.yml up -d --build
+
+      - name: Run integration tests
+        run: pytest tests/integration -q
+
+      - name: Collect Docker logs on failure
+        if: failure()
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-deploy-gate-${{ github.run_id }}
+        run: |
+          docker compose -f tests/integration/docker-compose.test.yml logs \
+            --no-color --timestamps \
+            > /tmp/integration-docker-logs.txt 2>&1 || true
+
+      - name: Upload Docker logs artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-gate-docker-logs-${{ github.run_id }}
+          path: /tmp/integration-docker-logs.txt
+          retention-days: 7
+
+      - name: Tear down integration stack
+        if: always()
+        env:
+          COMPOSE_PROJECT_NAME: alpaca-rl-deploy-gate-${{ github.run_id }}
+        run: docker compose -f tests/integration/docker-compose.test.yml down -v
+
+      - name: Prune stale Docker build cache
+        if: always()
+        run: docker builder prune -f --keep-storage 5gb || true
+
+  # ─── Deploy to Swarm via SSH ────────────────────────────────────────
+  deploy:
+    name: Deploy to production
+    needs: [gate, integration-gate]
+    if: |
+      always() &&
+      needs.gate.outputs.should_deploy == 'true' &&
+      (needs.integration-gate.result == 'success' || needs.integration-gate.result == 'skipped')
+    runs-on: [self-hosted, linux, vps]
+    timeout-minutes: 15
+    environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Deploy via SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "GHCR_TOKEN='${GHCR_TOKEN}' GITHUB_SHA='${GITHUB_SHA}' bash -s" \
+            < infra/scripts/cd-deploy.sh
+
+      - name: Cleanup SSH key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

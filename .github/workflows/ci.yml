@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [master, develop]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 jobs:
   # ─── Node/TypeScript services ───────────────────────────────────────
@@ -108,7 +108,7 @@ jobs:
   ghcr-push:
     name: Build & push to GHCR
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: [node-checks, python-checks, python-lint-only, column-alignment]
     permissions:
       contents: read
