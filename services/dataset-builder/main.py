@@ -9,18 +9,16 @@ from observability import setup_observability
 from datetime import datetime
 
 import pandas as pd
-import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import boto3
 import psycopg2
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
-from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -63,8 +61,6 @@ def build_walk_forward_splits(
     df = df.sort_values("time")
     dates = df["time"].unique()
     n = len(dates)
-    min_train = int(n * train_frac / n_splits)
-
     splits = []
     for i in range(1, n_splits + 1):
         train_end_idx = int(n * train_frac * i / n_splits)

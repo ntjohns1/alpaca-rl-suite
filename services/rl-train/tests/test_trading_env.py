@@ -16,7 +16,7 @@ from trading_env import (
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "shared"))
-from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
+from feature_columns import TECHNICAL_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────

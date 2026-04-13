@@ -5,7 +5,7 @@ All DB, S3, subprocess, and HTTP calls are mocked.
 import json
 import os
 import sys
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
@@ -252,7 +252,7 @@ class TestListJobsEndpoint:
             "id", "name", "status", "approval_status",
             "config_hash", "created_at", "updated_at", "completed_at"
         ])
-        with patch("pandas.read_sql", return_value=empty_df) as mock_sql:
+        with patch("pandas.read_sql", return_value=empty_df):
             resp = app_client.get("/kaggle/jobs?status=pending_approval")
         assert resp.status_code == 200
 

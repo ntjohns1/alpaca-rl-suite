@@ -7,7 +7,6 @@ import math
 
 import pandas as pd
 import numpy as np
-import pytest
 
 # Make the service importable without installed deps
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -69,7 +68,7 @@ class TestBacktestEngineBasics:
         assert result["initialCapital"] == 50_000
 
     def test_hold_policy_has_zero_trades(self):
-        hold_policy = lambda _state: 1  # always HOLD
+        def hold_policy(_state): return 1  # always HOLD
         engine = BacktestEngine()
         result = engine.run(_make_df(100), hold_policy)
         assert result["totalTrades"] == 0
@@ -95,7 +94,7 @@ class TestCostModel:
         # Zero-cost engine
         engine_free = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
         # Use a policy that switches positions frequently
-        switch_policy = lambda _: int(np.random.randint(0, 3))
+        def switch_policy(_): return int(np.random.randint(0, 3))
         np.random.seed(7)
         r_cost = engine_cost.run(df, switch_policy)
         np.random.seed(7)
@@ -151,7 +150,7 @@ class TestBiasGuards:
         """
         df = _make_df(100)
         engine = BacktestEngine(trading_cost_bps=10, time_cost_bps=0)
-        hold_policy = lambda _: 1  # HOLD → position=0
+        def hold_policy(_): return 1  # HOLD → position=0
         result = engine.run(df, hold_policy)
         # All strategy returns should be ≤ 0 (only cost, no position)
         for bar in result["equityCurve"]:

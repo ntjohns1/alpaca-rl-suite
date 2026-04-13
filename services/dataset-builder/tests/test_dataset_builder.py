@@ -2,8 +2,6 @@
 Unit tests for Dataset Builder Service.
 All DB, S3, and network calls are mocked.
 """
-import io
-import json
 import os
 import sys
 from unittest.mock import MagicMock, patch

@@ -6,14 +6,12 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from observability import setup_observability
-from datetime import datetime
 from typing import Optional
 
 import boto3
 import numpy as np
 import pandas as pd
 import psycopg2
-import pyarrow.parquet as pq
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel
@@ -45,7 +43,7 @@ def get_conn():
 # ─────────────────────────────────────────
 # Engine + baseline policies (imported from engine.py)
 # ─────────────────────────────────────────
-from engine import BacktestEngine, buy_and_hold_policy, random_policy  # noqa: E402
+from engine import BacktestEngine, buy_and_hold_policy  # noqa: E402
 
 
 # ─────────────────────────────────────────
@@ -104,7 +102,6 @@ def generate_charts(report_id: str, all_metrics: list[dict]) -> dict:
         if not curve:
             continue
 
-        times      = [c["time"] for c in curve]
         navs       = [c["nav"] for c in curve]
         market_nav = [c["market_nav"] for c in curve]
         positions  = [c["position"] for c in curve]

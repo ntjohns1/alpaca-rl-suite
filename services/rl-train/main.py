@@ -4,13 +4,11 @@ Trains agents via Stable-Baselines3 DQN (double-DQN by default).
 Keeps the same TradingEnvironment gymnasium interface and S3/DB plumbing.
 """
 import os
-import io
 import json
 import hashlib
 import logging
 from contextlib import asynccontextmanager
 from observability import setup_observability
-from datetime import datetime
 from typing import Optional
 
 import numpy as np
@@ -21,7 +19,7 @@ import torch
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from stable_baselines3 import DQN
-from stable_baselines3.common.callbacks import BaseCallback, EvalCallback
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 
 from trading_env import TradingEnvironment

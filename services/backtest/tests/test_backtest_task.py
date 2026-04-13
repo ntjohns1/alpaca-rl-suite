@@ -2,14 +2,12 @@
 Targeted tests for run_backtest_task and fetch_features_for_backtest
 to push coverage over 80%.
 """
-import json
 import os
 import sys
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
-import pytest
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -127,7 +125,7 @@ class TestRunBacktestTask:
              patch("main.generate_charts", return_value={}), \
              patch("main.upload_charts_to_s3", return_value={}), \
              patch("main.get_s3", return_value=mock_s3), \
-             patch("main.buy_and_hold_policy") as mock_bah, \
+             patch("main.buy_and_hold_policy"), \
              patch("main.get_conn") as mock_gc:
             mock_conn, _ = self._mock_conn()
             mock_gc.return_value = mock_conn

@@ -3,11 +3,9 @@ Unit tests for Backtest Service API endpoints and chart generation.
 All DB, S3, and network calls are mocked.
 """
 import base64
-import io
-import json
 import os
 import sys
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd

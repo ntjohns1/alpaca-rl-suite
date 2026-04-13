@@ -9,13 +9,12 @@ import pandas as pd
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
 import psycopg2
 from psycopg2.extras import execute_values
 import ta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
-from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS
+from feature_columns import TECHNICAL_COLS, ALL_FEATURE_COLS
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)

@@ -2,8 +2,6 @@
 Unit tests for RL Train Service API endpoints.
 All DB, S3, and network calls are mocked.
 """
-import io
-import json
 import os
 import sys
 from unittest.mock import MagicMock, patch
@@ -126,7 +124,7 @@ class TestListRunsEndpoint:
     def test_respects_limit_param(self, app_client):
         df = pd.DataFrame(columns=["id", "name", "status", "config_hash",
                                     "started_at", "completed_at"])
-        with patch("pandas.read_sql", return_value=df) as mock_sql:
+        with patch("pandas.read_sql", return_value=df):
             resp = app_client.get("/rl/runs?limit=10")
         assert resp.status_code == 200
 

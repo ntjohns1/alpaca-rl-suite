@@ -2,14 +2,11 @@
 Targeted tests for the train() background task in rl-train service.
 Mocks all SB3, torch, and DB dependencies.
 """
-import json
 import os
 import sys
 from unittest.mock import MagicMock, patch, mock_open
 
-import numpy as np
 import pandas as pd
-import pytest
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
