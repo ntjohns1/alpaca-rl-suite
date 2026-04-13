@@ -156,6 +156,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   alpaca-adapter:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/alpaca-adapter:latest
@@ -182,6 +191,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   market-ingest:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/market-ingest:latest
@@ -205,6 +223,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   orders:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/orders:latest
@@ -226,6 +253,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   risk:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/risk:latest
@@ -250,6 +286,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   portfolio:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/portfolio:latest
@@ -271,6 +316,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   strategy-runner:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/strategy-runner:latest
@@ -293,6 +347,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   api-gateway:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/api-gateway:latest
@@ -314,6 +377,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   web-ui:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/web-ui:latest
@@ -342,6 +414,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   dashboard:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/dashboard:latest
@@ -365,6 +446,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   # ═══════════════════════════════════════════════════════════════════════
   # COMPUTE + OBSERVABILITY NODE — server_5 (role=compute)
@@ -392,6 +482,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   dataset-builder:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/dataset-builder:latest
@@ -418,6 +517,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   backtest:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/backtest:latest
@@ -444,6 +552,15 @@ services:
           memory: 512M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   rl-train:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/rl-train:latest
@@ -470,6 +587,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   rl-infer:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/rl-infer:latest
@@ -496,6 +622,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   temporal-worker:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/temporal-worker:latest
@@ -521,6 +656,15 @@ services:
           memory: 128M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   kaggle-orchestrator:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/kaggle-orchestrator:latest
@@ -546,6 +690,15 @@ services:
           memory: 256M
       restart_policy:
         condition: any
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+        monitor: 30s
+        order: start-first
+      rollback_config:
+        parallelism: 1
+        order: start-first
 
   # ─── Observability (role=compute / server_5) ──────────────────────────
 
