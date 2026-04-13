@@ -14,8 +14,6 @@ for mod in (
     "stable_baselines3.common",
     "stable_baselines3.common.callbacks",
     "stable_baselines3.common.monitor",
-    "gymnasium",
-    "trading_env",
     "boto3",
     "psycopg2",
 ):

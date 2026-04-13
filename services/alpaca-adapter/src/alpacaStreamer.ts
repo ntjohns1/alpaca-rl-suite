@@ -2,7 +2,7 @@ import { Config } from '@alpaca-rl/config';
 import { connect, NatsConnection, StringCodec } from 'nats';
 import { SUBJECTS, BarEvent } from '@alpaca-rl/contracts';
 import { v4 as uuidv4 } from 'uuid';
-// eslint-disable-next-line @typescript-eslint/no-require-imports
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const AlpacaAPI = require('@alpacahq/alpaca-trade-api') as new (opts: Record<string, unknown>) => any;
 
 export class AlpacaStreamer {
