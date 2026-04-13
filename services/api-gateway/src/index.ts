@@ -1,5 +1,6 @@
 import './tracing';
 import Fastify from 'fastify';
+import { v4 as uuidv4 } from 'uuid';
 import { loadConfig } from '@alpaca-rl/config';
 import { registerRoutes } from './routes';
 import { errorHandler } from './middleware/errorHandler';
@@ -21,7 +22,7 @@ const app = Fastify({
       },
     },
   },
-  genReqId: () => require('uuid').v4(),
+  genReqId: () => uuidv4(),
 });
 
 app.setErrorHandler(errorHandler);

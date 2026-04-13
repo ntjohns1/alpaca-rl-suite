@@ -20,8 +20,3 @@ for mod in (
     "psycopg2",
 ):
     sys.modules.setdefault(mod, MagicMock())
-
-_pa_mock = MagicMock()
-_pa_mock.__version__ = "16.0.0"
-sys.modules.setdefault("pyarrow", _pa_mock)
-sys.modules.setdefault("pyarrow.parquet", MagicMock())
