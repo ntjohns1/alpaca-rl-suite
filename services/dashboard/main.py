@@ -3,18 +3,15 @@ Dashboard Service
 Aggregates system health and activity across all alpaca-rl-suite services.
 Provides a unified view for the web UI.
 """
-import json
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import Optional
+from datetime import datetime
 
 import pandas as pd
 import psycopg2
 import requests
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import FastAPI, Query
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)

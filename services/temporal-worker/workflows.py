@@ -5,11 +5,9 @@ Workflows:
   - TrainingWorkflow   : kick off rl-train, poll until done, run backtest, promote if Sharpe > threshold
   - BacktestWorkflow   : run backtest for an existing policy, store result
 """
-import asyncio
 from datetime import timedelta
-from typing import Optional
 
-from temporalio import workflow, activity
+from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 # ─────────────────────────────────────────

@@ -6,15 +6,13 @@ to the various alpaca-rl-suite microservices.
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
-
 import requests
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from auth import get_current_user, get_optional_user, keycloak_auth
+from auth import get_current_user
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -193,7 +191,6 @@ def health():
 @app.get("/api/auth/test")
 async def test_keycloak():
     """Test Keycloak connectivity from backend."""
-    import requests
     try:
         url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/.well-known/openid-configuration"
         resp = requests.get(url, timeout=5)

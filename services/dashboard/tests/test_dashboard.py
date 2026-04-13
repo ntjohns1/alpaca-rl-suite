@@ -2,7 +2,6 @@
 Unit tests for Dashboard Service.
 All DB and HTTP calls to downstream services are mocked.
 """
-import json
 import os
 import sys
 from unittest.mock import MagicMock, patch

@@ -5,7 +5,6 @@ POST /infer/action  → {action: 0|1|2, actionLabel: SHORT|HOLD|LONG, qValues, l
 """
 import io
 import os
-import json
 import time
 import logging
 from contextlib import asynccontextmanager
