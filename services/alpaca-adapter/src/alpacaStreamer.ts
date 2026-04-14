@@ -2,6 +2,8 @@ import { Config } from '@alpaca-rl/config';
 import { connect, NatsConnection, StringCodec } from 'nats';
 import { SUBJECTS, BarEvent } from '@alpaca-rl/contracts';
 import { v4 as uuidv4 } from 'uuid';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const AlpacaAPI = require('@alpacahq/alpaca-trade-api') as new (opts: Record<string, unknown>) => any;
 
 export class AlpacaStreamer {
   private nc: NatsConnection | null = null;
@@ -17,8 +19,7 @@ export class AlpacaStreamer {
   async subscribeToDataStream(symbols: string[]) {
     if (!this.nc) throw new Error('NATS not connected');
 
-    const Alpaca = require('@alpacahq/alpaca-trade-api');
-    const alpaca = new Alpaca({
+    const alpaca = new AlpacaAPI({
       keyId: this.config.ALPACA_API_KEY,
       secretKey: this.config.ALPACA_API_SECRET,
       paper: this.config.TRADING_MODE === 'paper',

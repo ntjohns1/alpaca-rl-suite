@@ -43,6 +43,7 @@ jobs:
     name: Python lint + test
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         service: [backtest, dashboard, dataset-builder, feature-builder, kaggle-orchestrator, rl-train]
     steps:
@@ -55,7 +56,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ruff pytest
+          pip install ruff pytest pytest-cov
           pip install -r services/${{ matrix.service }}/requirements.txt
 
       - name: Lint with ruff

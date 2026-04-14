@@ -14,14 +14,7 @@ for mod in (
     "stable_baselines3.common",
     "stable_baselines3.common.callbacks",
     "stable_baselines3.common.monitor",
-    "gymnasium",
-    "trading_env",
     "boto3",
     "psycopg2",
 ):
     sys.modules.setdefault(mod, MagicMock())
-
-_pa_mock = MagicMock()
-_pa_mock.__version__ = "16.0.0"
-sys.modules.setdefault("pyarrow", _pa_mock)
-sys.modules.setdefault("pyarrow.parquet", MagicMock())
