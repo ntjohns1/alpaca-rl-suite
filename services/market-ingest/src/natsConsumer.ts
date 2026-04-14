@@ -10,7 +10,7 @@ import {
   StorageType,
 } from 'nats';
 import { Config } from '@alpaca-rl/config';
-import { BarEventSchema, SUBJECTS } from '@alpaca-rl/contracts';
+import { BarEventSchema } from '@alpaca-rl/contracts';
 import { DbClient } from './dbClient';
 
 const sc = StringCodec();
