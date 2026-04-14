@@ -154,6 +154,17 @@ export function DatasetBuilder({ onClose, onSuccess }: DatasetBuilderProps) {
       }
     }
 
+    // Step 2.5: Block if any symbol has zero bars — user must backfill first
+    const missingBars = selectedSymbols.filter(sym => (avail[sym]?.bar_rows ?? 0) === 0)
+    if (missingBars.length > 0) {
+      setError(
+        `No bar data found for: ${missingBars.join(', ')}. ` +
+        `Use "Check Data" then "Backfill Missing Data" before building.`
+      )
+      setStep('form')
+      return
+    }
+
     // Step 3: Build dataset
     setStep('building')
     const name = generateDatasetName(selectedSymbols, timeframe, endDate)
