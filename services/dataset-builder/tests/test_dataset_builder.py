@@ -116,6 +116,44 @@ class TestBuildWalkForwardSplits:
         train_dates = [d for d in all_dates if str(d) <= splits[0]["train_end"]]
         assert len(train_dates) / len(all_dates) >= 0.7  # allow some tolerance
 
+    def test_no_index_error_on_minimum_data(self):
+        """n_splits+1 dates should never raise IndexError (the regression case)."""
+        from main import build_walk_forward_splits
+        # 6 dates for n_splits=5 — smallest valid input
+        dates = pd.date_range("2024-01-01", periods=6, freq="B")
+        df = pd.DataFrame({
+            "time": list(dates) * 1,
+            "symbol": ["SPY"] * 6,
+            "close": [100.0] * 6,
+        })
+        splits = build_walk_forward_splits(df, n_splits=5)
+        assert len(splits) >= 1  # at least one valid split was produced
+
+    def test_train_end_strictly_before_test_start_on_small_data(self):
+        """No lookahead even on tiny date ranges."""
+        from main import build_walk_forward_splits
+        dates = pd.date_range("2024-01-01", periods=10, freq="B")
+        df = pd.DataFrame({
+            "time": list(dates),
+            "symbol": ["SPY"] * 10,
+            "close": [100.0] * 10,
+        })
+        splits = build_walk_forward_splits(df, n_splits=5)
+        for s in splits:
+            assert s["train_end"] < s["test_start"], \
+                f"Lookahead on small data: train_end={s['train_end']} test_start={s['test_start']}"
+
+    def test_all_dates_within_bounds(self):
+        """train_start, train_end, test_start, test_end must all be real dates in df."""
+        from main import build_walk_forward_splits
+        df = _make_feature_df(60)
+        valid_dates = set(str(d) for d in df["time"].unique())
+        splits = build_walk_forward_splits(df, n_splits=4)
+        for s in splits:
+            for key in ("train_start", "train_end", "test_start", "test_end"):
+                assert s[key] in valid_dates, \
+                    f"Split date {s[key]} not in original date set"
+
 
 # ─── Upload Parquet tests ─────────────────────────────────────────────────────
 

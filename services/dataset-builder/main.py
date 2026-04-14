@@ -54,22 +54,31 @@ def build_walk_forward_splits(
     train_frac: float = 0.7,
 ) -> list[dict]:
     """
-    Creates n_splits walk-forward (expanding window) train/test pairs.
+    Creates up to n_splits walk-forward (expanding window) train/test pairs.
     Each split's test window starts strictly after its train window.
     Returns list of dicts: {split, train_start, train_end, test_start, test_end}
+
+    Requires at least n_splits + 1 unique dates in df.  Call-site should
+    validate this before calling (see build_dataset).
     """
     df = df.sort_values("time")
     dates = df["time"].unique()
     n = len(dates)
     splits = []
     for i in range(1, n_splits + 1):
-        train_end_idx = int(n * train_frac * i / n_splits)
-        test_end_idx  = min(train_end_idx + max(int(n * (1 - train_frac) / n_splits), 30), n - 1)
+        train_end_idx = min(int(n * train_frac * i / n_splits), n - 2)
+        test_start_idx = train_end_idx + 1
+        if test_start_idx >= n:
+            break
+        # Distribute remaining dates evenly across remaining splits
+        remaining_splits = n_splits - i + 1
+        test_window = max(1, (n - test_start_idx) // remaining_splits)
+        test_end_idx = min(test_start_idx + test_window - 1, n - 1)
         splits.append({
             "split": i,
             "train_start": str(dates[0]),
             "train_end":   str(dates[train_end_idx]),
-            "test_start":  str(dates[train_end_idx + 1]),
+            "test_start":  str(dates[test_start_idx]),
             "test_end":    str(dates[test_end_idx]),
         })
     return splits
@@ -177,6 +186,16 @@ def build_dataset(req: BuildDatasetRequest):
         if df.empty:
             raise HTTPException(status_code=422, detail="No feature data found for requested range")
 
+        n_dates = len(df["time"].unique())
+        if n_dates < req.n_splits + 1:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Not enough trading days ({n_dates}) for {req.n_splits} splits. "
+                    f"Need at least {req.n_splits + 1} days, or reduce n_splits."
+                ),
+            )
+
         splits = build_walk_forward_splits(df, req.n_splits, req.train_frac)
 
         # Build config hash for reproducibility
@@ -227,7 +246,7 @@ def build_dataset(req: BuildDatasetRequest):
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Dataset build failed: {e}")
+        log.exception(f"Dataset build failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -279,7 +298,7 @@ def export_dataset(
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Export failed: {e}")
+        log.exception(f"Export failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -310,7 +329,7 @@ def preview_dataset(
     except HTTPException:
         raise
     except Exception as e:
-        log.error(f"Preview failed: {e}")
+        log.exception(f"Preview failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
