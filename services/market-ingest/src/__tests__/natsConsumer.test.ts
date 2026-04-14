@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // ── Hoisted mocks (must be defined before vi.mock factories run) ─────
-const { mockAck, mockNak, mockConsume, mockGetConsumer, mockJsm, mockJs, mockNc, mockUpsertBar } =
+const { mockAck, mockNak, mockConsume, mockJsm, mockNc, mockUpsertBar } =
   vi.hoisted(() => {
     const mockAck  = vi.fn();
     const mockNak  = vi.fn();
@@ -18,7 +18,7 @@ const { mockAck, mockNak, mockConsume, mockGetConsumer, mockJsm, mockJs, mockNc,
       drain:            vi.fn().mockResolvedValue(undefined),
     };
     const mockUpsertBar = vi.fn().mockResolvedValue(undefined);
-    return { mockAck, mockNak, mockConsume, mockGetConsumer, mockJsm, mockJs, mockNc, mockUpsertBar };
+    return { mockAck, mockNak, mockConsume, mockJsm, mockNc, mockUpsertBar };
   });
 
 vi.mock('nats', () => ({

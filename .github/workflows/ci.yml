@@ -206,6 +206,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Create stub .env for compose validation
+        run: touch .env
+
       - name: Validate docker-compose config
         run: docker compose -f infra/docker-compose.yml config --quiet
 

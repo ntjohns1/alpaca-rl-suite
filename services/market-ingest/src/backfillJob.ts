@@ -1,6 +1,7 @@
 import { Config } from '@alpaca-rl/config';
 import { BackfillRequest } from '@alpaca-rl/contracts';
 import { DbClient } from './dbClient';
+import Alpaca = require('@alpacahq/alpaca-trade-api');
 
 export class BackfillJob {
   constructor(private config: Config, private db: DbClient) {}
@@ -33,8 +34,8 @@ export class BackfillJob {
   }
 
   private async fetchBars(symbol: string, timeframe: string, start: string, end: string) {
-    const Alpaca = require('@alpacahq/alpaca-trade-api');
-    const alpaca = new Alpaca({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const alpaca = new (Alpaca as any)({
       keyId: this.config.ALPACA_API_KEY,
       secretKey: this.config.ALPACA_API_SECRET,
       paper: this.config.TRADING_MODE === 'paper',
