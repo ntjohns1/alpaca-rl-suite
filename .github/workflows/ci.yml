@@ -193,6 +193,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
+          provenance: false
           tags: |
             ghcr.io/ntjohns1/alpaca-rl-suite/${{ matrix.service }}:latest
             ghcr.io/ntjohns1/alpaca-rl-suite/${{ matrix.service }}:${{ github.sha }}
