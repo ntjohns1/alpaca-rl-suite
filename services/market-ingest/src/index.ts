@@ -6,6 +6,7 @@ import { registry } from '@alpaca-rl/observability';
 import { BackfillJob } from './backfillJob';
 import { DbClient } from './dbClient';
 import { NatsBarConsumer } from './natsConsumer';
+import { v4 as uuidv4 } from 'uuid';
 
 const config = loadConfig();
 const app = Fastify({ logger: true });
@@ -15,7 +16,7 @@ app.post('/market/backfill', async (req, reply) => {
   const body = BackfillRequestSchema.safeParse(req.body);
   if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
 
-  const jobId = require('uuid').v4();
+  const jobId = uuidv4();
   const job = new BackfillJob(config, db);
 
   // Run async, don't block response

@@ -193,6 +193,7 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           push: true
+          provenance: false
           tags: |
             ghcr.io/ntjohns1/alpaca-rl-suite/${{ matrix.service }}:latest
             ghcr.io/ntjohns1/alpaca-rl-suite/${{ matrix.service }}:${{ github.sha }}
@@ -205,6 +206,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Create stub .env for compose validation
+        run: touch .env
 
       - name: Validate docker-compose config
         run: docker compose -f infra/docker-compose.yml config --quiet

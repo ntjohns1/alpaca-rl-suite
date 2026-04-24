@@ -5,6 +5,7 @@ import { SubmitOrderRequestSchema } from '@alpaca-rl/contracts';
 import { registry } from '@alpaca-rl/observability';
 import { OrdersDb } from './ordersDb';
 import { OrdersService } from './ordersService';
+import { v4 as uuidv4 } from 'uuid';
 
 const config = loadConfig();
 const app = Fastify({ logger: true });
@@ -14,7 +15,7 @@ const svc = new OrdersService(config, db);
 app.post('/orders', async (req, reply) => {
   const body = SubmitOrderRequestSchema.safeParse(req.body);
   if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
-  const traceId = (req as any).traceId ?? require('uuid').v4();
+  const traceId = (req as any).traceId ?? uuidv4();
   const result = await svc.submitOrder({ ...body.data, traceId });
   return reply.status(201).send(result);
 });

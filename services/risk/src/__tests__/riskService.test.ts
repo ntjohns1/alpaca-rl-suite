@@ -14,8 +14,6 @@ describe('Risk service logic', () => {
 
   it('blocks order when kill switch is active', () => {
     const state = { kill_switch: true, daily_loss_usd: 0, max_daily_loss: 1000, portfolio_value: 100000 };
-    const maxPositionPct = 0.1;
-    const notional = 5000;
 
     expect(state.kill_switch).toBe(true);
     // kill switch blocks regardless of notional
