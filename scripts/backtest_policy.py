@@ -198,6 +198,8 @@ _ENGINE_TO_SNAKE = {
     "winRate":                "win_rate",
     "profitFactor":           "profit_factor",
     "totalTrades":            "total_trades",
+    "totalPositionChanges":   "total_position_changes",
+    "totalTradeUnits":        "total_trade_units",
     "tradingDays":            "trading_days",
 }
 

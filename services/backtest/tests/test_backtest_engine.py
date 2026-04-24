@@ -55,12 +55,13 @@ class TestBacktestEngineBasics:
         ]:
             assert key in result, f"Missing key: {key}"
 
-    def test_equity_curve_length_matches_input(self):
+    def test_equity_curve_length_is_n_minus_1(self):
+        """N input rows produce N-1 return-generating bars (terminal close excluded)."""
         n = 150
         df = _make_df(n)
         engine = BacktestEngine()
         result = engine.run(df, buy_and_hold_policy)
-        assert len(result["equityCurve"]) == n
+        assert len(result["equityCurve"]) == n - 1
 
     def test_initial_capital_preserved_in_output(self):
         engine = BacktestEngine(initial_capital=50_000)
@@ -79,11 +80,11 @@ class TestBacktestEngineBasics:
         # NAV should not stay exactly at initial capital
         assert result["finalNav"] != result["initialCapital"]
 
-    def test_trading_days_matches_rows(self):
+    def test_trading_days_is_n_minus_1(self):
         df = _make_df(200)
         engine = BacktestEngine()
         result = engine.run(df, buy_and_hold_policy)
-        assert result["tradingDays"] == 200
+        assert result["tradingDays"] == 199
 
 
 class TestCostModel:
@@ -276,3 +277,132 @@ class TestCorrectnessFixes:
         except ValueError:
             return
         raise AssertionError("expected ValueError for invalid policy output")
+
+
+class TestTerminalBarAndTradeUnits:
+    def test_terminal_bar_incurs_no_cost(self):
+        """
+        A 2-row df with nonzero time_cost_bps and a HOLD (flat) policy
+        must leave NAV at initial capital: only one return period exists,
+        and with position=0 it generates no P&L. The terminal row is not
+        charged carry cost.
+        """
+        df = pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=2, freq="B"),
+            "ret_1d":  [0.0, 0.0],
+            "ret_2d":  [0.0, 0.0], "ret_5d": [0.0, 0.0],
+            "ret_10d": [0.0, 0.0], "ret_21d": [0.0, 0.0],
+            "rsi":     [50.0, 50.0], "macd": [0.0, 0.0], "atr": [1.0, 1.0],
+            "stoch":   [50.0, 50.0], "ultosc": [50.0, 50.0],
+        })
+        engine = BacktestEngine(trading_cost_bps=10, time_cost_bps=100)
+        def hold(_): return 1
+        result = engine.run(df, hold)
+        # One return-generating bar. HOLD from flat → no trade units →
+        # time_cost is charged on that single bar, so NAV drops by exactly
+        # time_cost_bps. Terminal bar contributes no additional cost.
+        assert result["tradingDays"] == 1
+        expected_nav = 100_000 * (1 - 100 / 10_000)
+        assert abs(result["finalNav"] - expected_nav) < 0.01
+
+    def test_single_row_df_returns_empty(self):
+        """A 1-row df cannot form a return period → no metrics."""
+        df = pd.DataFrame({
+            "time":    [pd.Timestamp("2024-01-01")],
+            "ret_1d":  [0.01],
+            "ret_2d":  [0.0], "ret_5d": [0.0],
+            "ret_10d": [0.0], "ret_21d": [0.0],
+            "rsi":     [50.0], "macd": [0.0], "atr": [1.0],
+            "stoch":   [50.0], "ultosc": [50.0],
+        })
+        assert BacktestEngine().run(df, buy_and_hold_policy) == {}
+
+    def test_reversal_charges_two_units_but_counts_one_change(self):
+        """
+        Short→long flip: totalTradeUnits += 2 (two executions), but
+        totalPositionChanges += 1 (one bar with a change).
+        """
+        n = 4
+        df = pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=n, freq="B"),
+            "ret_1d":  [0.0] * n,
+            "ret_2d":  [0.0] * n, "ret_5d": [0.0] * n,
+            "ret_10d": [0.0] * n, "ret_21d": [0.0] * n,
+            "rsi":     [50.0] * n, "macd": [0.0] * n, "atr": [1.0] * n,
+            "stoch":   [50.0] * n, "ultosc": [50.0] * n,
+        })
+        # Actions: SHORT, LONG, LONG — the SHORT→LONG transition at bar 1
+        # is the reversal we care about. Only 3 decisions (N-1 bars).
+        calls = {"i": 0}
+        def scripted(_):
+            seq = [0, 2, 2]  # SHORT, LONG, LONG
+            a = seq[calls["i"]]
+            calls["i"] += 1
+            return a
+        engine = BacktestEngine(trading_cost_bps=10, time_cost_bps=0)
+        result = engine.run(df, scripted)
+        # Bars:
+        #   b0: pos 0→-1 (1 unit, 1 change)
+        #   b1: pos -1→1 (2 units, 1 change)   ← reversal
+        #   b2: pos 1→1  (0 units)
+        assert result["totalPositionChanges"] == 2
+        assert result["totalTradeUnits"] == 3
+        # Backwards-compatible alias still reports position changes.
+        assert result["totalTrades"] == result["totalPositionChanges"]
+
+    def test_flat_strategy_sortino_is_zero_not_inf(self):
+        """
+        A strategy that produces only zero returns (no positions, no carry)
+        should NOT report infinite Sortino — that would poison any ranking
+        logic. With mean_ret == 0 and no losses, return 0.0.
+        """
+        n = 30
+        df = pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=n, freq="B"),
+            "ret_1d":  np.zeros(n),
+            "ret_2d":  np.zeros(n), "ret_5d": np.zeros(n),
+            "ret_10d": np.zeros(n), "ret_21d": np.zeros(n),
+            "rsi":     [50.0] * n, "macd": [0.0] * n, "atr": [1.0] * n,
+            "stoch":   [50.0] * n, "ultosc": [50.0] * n,
+        })
+        # HOLD policy keeps position=0 the whole time.
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        def hold(_): return 1
+        result = engine.run(df, hold)
+        assert result["sortinoRatio"] == 0.0
+        assert not math.isinf(result["sortinoRatio"])
+
+
+class TestPerRunRngReset:
+    def test_same_engine_reproducible_across_runs(self):
+        """
+        With a seed, calling run() twice on the same engine must yield
+        identical results — symbol ordering must not perturb per-symbol
+        outputs.
+        """
+        df = _make_df(60)
+        engine = BacktestEngine(seed=7)
+        p = engine.make_random_policy()
+        r1 = engine.run(df, p)
+        r2 = engine.run(df, p)
+        assert r1["finalNav"] == r2["finalNav"]
+        assert r1["totalTradeUnits"] == r2["totalTradeUnits"]
+
+    def test_ordering_invariance_across_symbols(self):
+        """
+        Running A then B on a seeded engine must give the same A and B
+        results as running B then A. This is the real integration guarantee.
+        """
+        dfA = _make_df(50, seed=1)
+        dfB = _make_df(50, seed=2)
+
+        e1 = BacktestEngine(seed=42)
+        rA_first  = e1.run(dfA, e1.make_random_policy())
+        rB_second = e1.run(dfB, e1.make_random_policy())
+
+        e2 = BacktestEngine(seed=42)
+        rB_first  = e2.run(dfB, e2.make_random_policy())
+        rA_second = e2.run(dfA, e2.make_random_policy())
+
+        assert rA_first["finalNav"] == rA_second["finalNav"]
+        assert rB_first["finalNav"] == rB_second["finalNav"]

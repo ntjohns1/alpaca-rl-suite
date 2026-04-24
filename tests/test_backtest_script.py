@@ -107,8 +107,9 @@ class TestMetricsCalculation:
             "profit_factor", "total_trades", "trading_days",
         ):
             assert key in result["metrics"], f"Missing key: {key}"
-        assert result["metrics"]["trading_days"] == 120
-        assert len(result["equity_curve"]) == 120
+        # N input rows → N-1 return-generating bars (terminal close excluded).
+        assert result["metrics"]["trading_days"] == 119
+        assert len(result["equity_curve"]) == 119
 
     def test_script_matches_service_on_shared_fixture(self):
         """Script and service must agree on all metrics — no drift."""
