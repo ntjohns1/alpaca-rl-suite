@@ -5,7 +5,7 @@
 Bootstraps a self-hosted GitHub Actions runner on a Debian/Ubuntu VPS.
 The runner registers against `https://github.com/ntjohns1/alpaca-rl-suite`
 with labels `self-hosted,linux,vps`, which is what `integration.yml` targets.
-
+# potato
 ### What the script installs
 
 | Component | Notes |
