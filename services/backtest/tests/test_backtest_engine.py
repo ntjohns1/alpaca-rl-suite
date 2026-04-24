@@ -11,7 +11,7 @@ import numpy as np
 # Make the service importable without installed deps
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from engine import BacktestEngine, buy_and_hold_policy, random_policy
+from engine import BacktestEngine, buy_and_hold_policy
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -89,16 +89,10 @@ class TestBacktestEngineBasics:
 class TestCostModel:
     def test_trading_cost_reduces_nav_vs_zero_cost(self):
         df = _make_df(100, seed=1)
-        # Full-cost engine
-        engine_cost = BacktestEngine(trading_cost_bps=10, time_cost_bps=1)
-        # Zero-cost engine
-        engine_free = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
-        # Use a policy that switches positions frequently
-        def switch_policy(_): return int(np.random.randint(0, 3))
-        np.random.seed(7)
-        r_cost = engine_cost.run(df, switch_policy)
-        np.random.seed(7)
-        r_free = engine_free.run(df, switch_policy)
+        engine_cost = BacktestEngine(trading_cost_bps=10, time_cost_bps=1, seed=7)
+        engine_free = BacktestEngine(trading_cost_bps=0, time_cost_bps=0, seed=7)
+        r_cost = engine_cost.run(df, engine_cost.make_random_policy())
+        r_free = engine_free.run(df, engine_free.make_random_policy())
         # Zero-cost run should end with higher or equal NAV
         assert r_free["finalNav"] >= r_cost["finalNav"]
 
@@ -170,7 +164,115 @@ class TestBiasGuards:
     def test_deterministic_with_seed(self):
         """Same seed → identical results."""
         df = _make_df(100)
-        r1 = BacktestEngine(seed=42).run(df, random_policy)
-        r2 = BacktestEngine(seed=42).run(df, random_policy)
+        e1 = BacktestEngine(seed=42)
+        e2 = BacktestEngine(seed=42)
+        r1 = e1.run(df, e1.make_random_policy())
+        r2 = e2.run(df, e2.make_random_policy())
         assert r1["finalNav"] == r2["finalNav"]
         assert r1["totalTrades"] == r2["totalTrades"]
+
+    def test_rng_isolation_between_instances(self):
+        """Interleaving two engines must not affect their outputs."""
+        df = _make_df(80)
+        # Baseline: each engine run to completion sequentially.
+        e1a = BacktestEngine(seed=13)
+        e2a = BacktestEngine(seed=99)
+        r1_seq = e1a.run(df, e1a.make_random_policy())
+        r2_seq = e2a.run(df, e2a.make_random_policy())
+        # Interleaved: construct both, then run. Global state would leak here
+        # if seeds were set via np.random.seed.
+        e1b = BacktestEngine(seed=13)
+        e2b = BacktestEngine(seed=99)
+        p1 = e1b.make_random_policy()
+        p2 = e2b.make_random_policy()
+        # Run e2 first — if RNGs were global, this would shift e1's stream.
+        r2_int = e2b.run(df, p2)
+        r1_int = e1b.run(df, p1)
+        assert r1_seq["finalNav"] == r1_int["finalNav"]
+        assert r2_seq["finalNav"] == r2_int["finalNav"]
+
+
+class TestCorrectnessFixes:
+    def test_no_lookahead_uses_next_bar_return(self):
+        """
+        Construct a df where current ret_1d perfectly signals current-bar return.
+        A policy that 'cheats' by keying on state[0] (ret_1d) must NOT earn
+        riskless profit, because the realized return is shifted to next bar.
+        """
+        n = 50
+        # Alternate ±0.02 returns
+        rets = np.array([0.02 if i % 2 == 0 else -0.02 for i in range(n)])
+        dates = pd.date_range("2021-01-01", periods=n, freq="B")
+        df = pd.DataFrame({
+            "time":    dates,
+            "ret_1d":  rets,
+            "ret_2d":  rets, "ret_5d": rets, "ret_10d": rets, "ret_21d": rets,
+            "rsi":     50.0, "macd": 0.0, "atr": 1.0, "stoch": 50.0, "ultosc": 50.0,
+        })
+        # Cheating policy: if current ret_1d > 0 go LONG, else SHORT.
+        # With look-ahead, this earns |0.02| every bar. Without, it loses,
+        # because signal and realized return are antiphased after shift.
+        def cheating_policy(state):
+            return 2 if state[0] > 0 else 0
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, cheating_policy)
+        # If look-ahead were present, totalReturn would be strongly positive.
+        # After the fix, it should be non-positive.
+        assert result["totalReturn"] <= 0.0, (
+            f"Look-ahead leak: totalReturn={result['totalReturn']}"
+        )
+
+    def test_alpha_zero_on_flat_market(self):
+        """Buy-and-hold on a zero-return market should produce ~0 alpha."""
+        n = 100
+        dates = pd.date_range("2021-01-01", periods=n, freq="B")
+        df = pd.DataFrame({
+            "time":    dates,
+            "ret_1d":  np.zeros(n),
+            "ret_2d":  np.zeros(n), "ret_5d": np.zeros(n),
+            "ret_10d": np.zeros(n), "ret_21d": np.zeros(n),
+            "rsi":     50.0, "macd": 0.0, "atr": 1.0, "stoch": 50.0, "ultosc": 50.0,
+        })
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+        assert abs(result["alpha"]) < 1e-3
+
+    def test_sortino_is_inf_with_no_losses(self):
+        """A policy that never loses should report sortino as inf, not nan."""
+        n = 20
+        dates = pd.date_range("2021-01-01", periods=n, freq="B")
+        df = pd.DataFrame({
+            "time":    dates,
+            "ret_1d":  np.full(n, 0.01),
+            "ret_2d":  np.zeros(n), "ret_5d": np.zeros(n),
+            "ret_10d": np.zeros(n), "ret_21d": np.zeros(n),
+            "rsi":     50.0, "macd": 0.0, "atr": 1.0, "stoch": 50.0, "ultosc": 50.0,
+        })
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+        assert math.isinf(result["sortinoRatio"])
+        assert not math.isnan(result["sortinoRatio"])
+
+    def test_nan_features_do_not_leak_to_policy(self):
+        """NaN in feature columns should be coerced to 0.0 before policy sees them."""
+        df = _make_df(30)
+        df.loc[5, "rsi"] = np.nan
+        df.loc[10, "macd"] = np.nan
+        seen_nan = {"flag": False}
+        def watchdog_policy(state):
+            if any(math.isnan(x) for x in state):
+                seen_nan["flag"] = True
+            return 1
+        engine = BacktestEngine()
+        engine.run(df, watchdog_policy)
+        assert not seen_nan["flag"]
+
+    def test_invalid_action_raises(self):
+        df = _make_df(10)
+        def bad_policy(_): return 3
+        engine = BacktestEngine()
+        try:
+            engine.run(df, bad_policy)
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for invalid policy output")

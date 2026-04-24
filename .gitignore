@@ -7,6 +7,8 @@ dist/
 .DS_Store
 *.log
 coverage/
+.coverage
+.coverage.*
 .nyc_output/
 __pycache__/
 *.py[cod]
@@ -28,3 +30,4 @@ reference/
 actions-runner/
 infra/scripts/generate-secrets.sh
 infra/.env.production.template
+services/backtest/.coverage
