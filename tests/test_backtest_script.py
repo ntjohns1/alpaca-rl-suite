@@ -72,42 +72,67 @@ class TestFeatureCalculation:
 
 
 class TestMetricsCalculation:
-    """Test metrics calculation"""
-    
-    def test_calculate_metrics_basic(self):
-        """Test basic metrics calculation"""
-        # Create simple equity curve
-        equity_curve = []
-        initial_capital = 100000
-        
-        for i in range(252):
-            nav = initial_capital * (1 + 0.0001 * i)  # Steady growth
-            market_nav = initial_capital * (1 + 0.00005 * i)  # Slower growth
-            
-            equity_curve.append({
-                "date": f"2024-01-{i+1:02d}",
-                "nav": nav,
-                "market_nav": market_nav,
-                "position": 1,
-                "strategy_ret": 0.0001,
-                "market_ret": 0.00005,
-                "cost": 0.0001,
-            })
-        
-        metrics = bp.calculate_metrics(equity_curve, initial_capital, 10)
-        
-        # Check all expected metrics exist
-        assert "total_return" in metrics
-        assert "sharpe_ratio" in metrics
-        assert "max_drawdown" in metrics
-        assert "win_rate" in metrics
-        assert "profit_factor" in metrics
-        assert "alpha" in metrics
-        
-        # Basic sanity checks
-        assert metrics["total_return"] > 0, "Should have positive return"
-        assert metrics["max_drawdown"] >= 0, "Drawdown should be non-negative"
-        assert 0 <= metrics["win_rate"] <= 1, "Win rate should be between 0 and 1"
+    """End-to-end metrics via the shared BacktestEngine."""
+
+    @staticmethod
+    def _make_feature_df(n: int = 100) -> pd.DataFrame:
+        """DataFrame shaped like what calculate_features+normalize_features emit."""
+        rng = np.random.default_rng(0)
+        dates = pd.date_range("2024-01-01", periods=n, freq="B")
+        returns = rng.normal(0.0005, 0.01, n)
+        df = pd.DataFrame({
+            "date":    dates,
+            "returns": returns,
+            "ret_2":   np.roll(returns, 1),
+            "ret_5":   np.roll(returns, 4),
+            "ret_10":  np.roll(returns, 9),
+            "ret_21":  np.roll(returns, 20),
+            "rsi":     rng.uniform(20, 80, n),
+            "macd":    rng.normal(0, 0.5, n),
+            "atr":     rng.uniform(0.5, 3.0, n),
+            "stoch":   rng.uniform(10, 90, n),
+            "ultosc":  rng.uniform(20, 80, n),
+        }).set_index("date")
+        return df
+
+    def test_run_backtest_returns_expected_snake_case_keys(self):
+        df = self._make_feature_df(120)
+        result = bp.run_backtest(
+            df, lambda _s: 2, initial_capital=100_000,
+            trading_cost_bps=0, time_cost_bps=0,
+        )
+        for key in (
+            "total_return", "annualized_return", "market_return", "alpha",
+            "sharpe_ratio", "sortino_ratio", "max_drawdown", "win_rate",
+            "profit_factor", "total_trades", "trading_days",
+        ):
+            assert key in result["metrics"], f"Missing key: {key}"
+        assert result["metrics"]["trading_days"] == 120
+        assert len(result["equity_curve"]) == 120
+
+    def test_script_matches_service_on_shared_fixture(self):
+        """Script and service must agree on all metrics — no drift."""
+        from engine import BacktestEngine, buy_and_hold_policy
+
+        df_script = self._make_feature_df(150)
+        script_result = bp.run_backtest(
+            df_script, buy_and_hold_policy, initial_capital=100_000,
+            trading_cost_bps=10, time_cost_bps=1,
+        )
+
+        df_engine = bp._to_engine_df(df_script)
+        engine_result = BacktestEngine(
+            initial_capital=100_000, trading_cost_bps=10, time_cost_bps=1,
+        ).run(df_engine, buy_and_hold_policy)
+
+        for camel, snake in bp._ENGINE_TO_SNAKE.items():
+            if camel == "equityCurve":
+                continue
+            assert script_result["metrics"][snake] == engine_result[camel], (
+                f"Drift on {camel}/{snake}: "
+                f"script={script_result['metrics'][snake]} vs "
+                f"engine={engine_result[camel]}"
+            )
 
 
 class TestPromotionCriteria:

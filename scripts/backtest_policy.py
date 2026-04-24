@@ -42,6 +42,15 @@ import matplotlib.dates as mdates
 from sklearn.preprocessing import scale
 import ta
 
+# Import the shared engine so this script and the backtest service agree
+# on metrics (alpha formula, look-ahead semantics, etc.).
+_BACKTEST_SVC = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "services", "backtest"
+)
+if _BACKTEST_SVC not in sys.path:
+    sys.path.insert(0, _BACKTEST_SVC)
+from engine import BacktestEngine  # noqa: E402
+
 
 def load_data_from_db(symbol: str, start_date: str, end_date: str, database_url: str) -> pd.DataFrame:
     """Load bar data from PostgreSQL for the test period"""
@@ -172,148 +181,93 @@ def load_policy(policy_path: str):
     return policy_fn
 
 
-def run_backtest(df: pd.DataFrame, policy_fn, initial_capital: float, 
+# Map engine (camelCase) output keys to this script's snake_case contract,
+# which is consumed by evaluate_promotion_criteria, print_summary, and the
+# saved JSON report.
+_ENGINE_TO_SNAKE = {
+    "finalNav":               "final_nav",
+    "initialCapital":         "initial_capital",
+    "totalReturn":            "total_return",
+    "annualizedReturn":       "annualized_return",
+    "marketReturn":           "market_return",
+    "annualizedMarketReturn": "annualized_market_return",
+    "alpha":                  "alpha",
+    "sharpeRatio":            "sharpe_ratio",
+    "sortinoRatio":           "sortino_ratio",
+    "maxDrawdown":            "max_drawdown",
+    "winRate":                "win_rate",
+    "profitFactor":           "profit_factor",
+    "totalTrades":            "total_trades",
+    "tradingDays":            "trading_days",
+}
+
+
+def _engine_metrics_to_snake(metrics: dict) -> dict:
+    out = {}
+    for k, v in metrics.items():
+        if k == "equityCurve":
+            continue
+        out[_ENGINE_TO_SNAKE.get(k, k)] = v
+    return out
+
+
+def _to_engine_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Adapt the script's feature DataFrame to the engine's column contract.
+
+    Script columns:  date index, returns, ret_2, ret_5, ret_10, ret_21, rsi, macd, atr, stoch, ultosc
+    Engine columns:  time, ret_1d, ret_2d, ret_5d, ret_10d, ret_21d, rsi, macd, atr, stoch, ultosc
+    """
+    df = df.sort_index().reset_index()
+    return df.rename(columns={
+        "date":    "time",
+        "returns": "ret_1d",
+        "ret_2":   "ret_2d",
+        "ret_5":   "ret_5d",
+        "ret_10":  "ret_10d",
+        "ret_21":  "ret_21d",
+    })
+
+
+def run_backtest(df: pd.DataFrame, policy_fn, initial_capital: float,
                  trading_cost_bps: float, time_cost_bps: float) -> dict:
     """
-    Run backtest on test data.
-    
-    Returns dict with metrics and equity curve.
+    Run backtest via the shared BacktestEngine so the script and the
+    backtest service cannot drift apart on metric definitions.
+
+    Returns dict with metrics (snake_case) and equity curve.
     """
     print(f"📈 Running backtest...")
     print(f"  Initial capital: ${initial_capital:,.0f}")
     print(f"  Trading cost: {trading_cost_bps} bps")
     print(f"  Time cost: {time_cost_bps} bps")
-    
-    df = df.sort_index().reset_index()
-    
-    feature_cols = [
-        "ret_2", "ret_5", "ret_10", "ret_21",  # Note: ret_2 not returns for state
-        "rsi", "macd", "atr", "stoch", "ultosc"
+
+    engine_df = _to_engine_df(df)
+    engine = BacktestEngine(
+        initial_capital=initial_capital,
+        trading_cost_bps=trading_cost_bps,
+        time_cost_bps=time_cost_bps,
+    )
+    result = engine.run(engine_df, policy_fn)
+
+    metrics = _engine_metrics_to_snake(result)
+    equity_curve = [
+        {
+            "date":         bar["time"],
+            "nav":          bar["nav"],
+            "market_nav":   bar["market_nav"],
+            "position":     bar["position"],
+            "strategy_ret": bar["strategy_ret"],
+            "market_ret":   bar["market_ret"],
+            "cost":         bar["cost"],
+        }
+        for bar in result["equityCurve"]
     ]
-    
-    # Add returns as first feature (matching training env)
-    feature_cols = ["returns"] + feature_cols
-    
-    nav = initial_capital
-    market_nav = initial_capital
-    position = 0  # -1=short, 0=flat, 1=long
-    equity_curve = []
-    trades = 0
-    
-    trading_cost = trading_cost_bps / 10_000
-    time_cost = time_cost_bps / 10_000
-    
-    for idx, row in df.iterrows():
-        # Get state (normalized features)
-        state = [float(row[c]) for c in feature_cols]
-        
-        # Get action from policy
-        action = policy_fn(state)
-        new_position = action - 1  # 0->-1, 1->0, 2->1
-        
-        # Market return (use original returns, not normalized)
-        market_ret = float(row["returns"]) if not pd.isna(row["returns"]) else 0.0
-        
-        # Calculate costs
-        n_trades = abs(new_position - position)
-        trade_cost_val = n_trades * trading_cost
-        time_cost_val = 0.0 if n_trades else time_cost
-        total_cost = trade_cost_val + time_cost_val
-        
-        # Calculate strategy return
-        strategy_ret = position * market_ret - total_cost
-        
-        # Update NAVs
-        nav = nav * (1 + strategy_ret)
-        market_nav = market_nav * (1 + market_ret)
-        
-        if n_trades > 0:
-            trades += 1
-        
-        equity_curve.append({
-            "date": str(row["date"]),
-            "nav": round(nav, 2),
-            "market_nav": round(market_nav, 2),
-            "position": new_position,
-            "strategy_ret": round(strategy_ret, 6),
-            "market_ret": round(market_ret, 6),
-            "cost": round(total_cost, 6),
-        })
-        
-        position = new_position
-    
-    # Calculate metrics
-    metrics = calculate_metrics(equity_curve, initial_capital, trades)
-    
-    print(f"  ✓ Backtest complete ({len(equity_curve)} days, {trades} trades)")
-    
-    return {
-        "metrics": metrics,
-        "equity_curve": equity_curve
-    }
 
+    print(f"  ✓ Backtest complete ({metrics['trading_days']} days, "
+          f"{metrics['total_trades']} trades)")
 
-def calculate_metrics(equity_curve: list, initial_capital: float, n_trades: int) -> dict:
-    """Calculate performance metrics from equity curve"""
-    
-    navs = [r["nav"] for r in equity_curve]
-    market_navs = [r["market_nav"] for r in equity_curve]
-    rets = [r["strategy_ret"] for r in equity_curve]
-    
-    final_nav = navs[-1]
-    total_return = (final_nav - initial_capital) / initial_capital
-    market_return = (market_navs[-1] - initial_capital) / initial_capital
-    
-    trading_days = len(equity_curve)
-    ann_factor = 252 / trading_days if trading_days > 0 else 1
-    
-    ann_return = (1 + total_return) ** ann_factor - 1
-    
-    # Sharpe ratio
-    ret_arr = np.array(rets)
-    sharpe = float(np.mean(ret_arr) / (np.std(ret_arr) + 1e-9) * np.sqrt(252))
-    
-    # Sortino ratio
-    neg_rets = ret_arr[ret_arr < 0]
-    sortino = float(np.mean(ret_arr) / (np.std(neg_rets) + 1e-9) * np.sqrt(252))
-    
-    # Max drawdown
-    peak = initial_capital
-    max_dd = 0.0
-    for nav in navs:
-        if nav > peak:
-            peak = nav
-        dd = (peak - nav) / peak
-        if dd > max_dd:
-            max_dd = dd
-    
-    # Win rate
-    wins = sum(1 for r in rets if r > 0)
-    win_rate = wins / len(rets) if rets else 0.0
-    
-    # Profit factor
-    gross_profit = sum(r for r in rets if r > 0)
-    gross_loss = abs(sum(r for r in rets if r < 0))
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
-    
-    # Alpha
-    alpha = ann_return - market_return * ann_factor
-    
-    return {
-        "final_nav": round(final_nav, 2),
-        "initial_capital": initial_capital,
-        "total_return": round(total_return, 4),
-        "annualized_return": round(ann_return, 4),
-        "market_return": round(market_return, 4),
-        "alpha": round(alpha, 4),
-        "sharpe_ratio": round(sharpe, 3),
-        "sortino_ratio": round(sortino, 3),
-        "max_drawdown": round(max_dd, 4),
-        "win_rate": round(win_rate, 4),
-        "profit_factor": round(profit_factor, 3),
-        "total_trades": n_trades,
-        "trading_days": trading_days,
-    }
+    return {"metrics": metrics, "equity_curve": equity_curve}
 
 
 def evaluate_promotion_criteria(metrics: dict) -> dict:
