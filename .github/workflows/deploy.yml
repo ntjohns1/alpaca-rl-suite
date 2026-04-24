@@ -112,7 +112,7 @@ jobs:
         env:
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GITHUB_SHA: ${{ github.sha }}
         run: |
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
