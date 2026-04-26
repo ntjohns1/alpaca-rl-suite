@@ -2,6 +2,7 @@
 Pure backtesting engine — no DB, S3, or network deps.
 Importable standalone for unit tests.
 """
+import math
 from typing import Callable, Optional
 
 import pandas as pd
@@ -143,8 +144,9 @@ class BacktestEngine:
                 )
             new_position = action - 1  # 0→-1, 1→0, 2→1
 
-            raw_next = realized_next[i]
-            market_ret = 0.0 if pd.isna(raw_next) else float(raw_next)
+            # NaN-feature rows (which include NaN ret_1d) were dropped above,
+            # and we only iterate i < N-1, so realized_next[i] is never NaN.
+            market_ret = float(realized_next[i])
 
             n_trade_units = abs(new_position - position)
             trade_cost = n_trade_units * self.trading_cost_bps
@@ -163,8 +165,15 @@ class BacktestEngine:
             market_navs_raw.append(market_nav)
             rets_raw.append(strategy_ret)
 
+            # Wire format: tz-aware ISO 8601. A naive isoformat (no tz) is
+            # parsed as local time by JS engines, which would shift the
+            # equity curve by the viewer's UTC offset. Assume UTC for naive
+            # timestamps (the trading-data convention upstream).
+            ts = pd.Timestamp(row["time"])
+            if ts.tzinfo is None:
+                ts = ts.tz_localize("UTC")
             equity_curve.append({
-                "time":         str(row["time"]),
+                "time":         ts.isoformat(),
                 "nav":          round(nav, 4),
                 "market_nav":   round(market_nav, 4),
                 "position":     new_position,
@@ -175,25 +184,26 @@ class BacktestEngine:
 
             position = new_position
 
-        return self._compute_metrics(
-            equity_curve,
+        metrics = self._compute_metrics(
             navs=navs_raw,
             market_navs=market_navs_raw,
             rets=rets_raw,
             position_changes=position_changes,
             trade_units_total=trade_units_total,
         )
+        if metrics:
+            metrics["equityCurve"] = equity_curve
+        return metrics
 
     def _compute_metrics(
         self,
-        curve: list[dict],
         navs: list[float],
         market_navs: list[float],
         rets: list[float],
         position_changes: int,
         trade_units_total: int,
     ) -> dict:
-        if not curve:
+        if not rets:
             return {}
 
         ret_arr    = np.asarray(rets, dtype=float)
@@ -203,11 +213,34 @@ class BacktestEngine:
         final_nav     = float(nav_arr[-1])
         total_return  = (final_nav - self.initial_capital) / self.initial_capital
         market_return = (float(mnav_arr[-1]) - self.initial_capital) / self.initial_capital
-        trading_days  = len(curve)
-        ann_factor    = 252 / trading_days if trading_days > 0 else 1
+        trading_days  = ret_arr.size
+        ann_factor    = 252 / trading_days
 
-        ann_return = (1 + total_return) ** ann_factor - 1
-        ann_market_return = (1 + market_return) ** ann_factor - 1
+        # Annualization is undefined / unrepresentable in two cases:
+        #   1. NAV ≤ 0 (short blowup, corrupt ret_1d): total_return ≤ -1 →
+        #      (1 + total_return) ** frac is NaN / complex.
+        #   2. Huge positive total_return on a short backtest: e.g. N=1
+        #      with total_return > ~15 raises OverflowError, or saturates
+        #      to inf, which json.dumps(allow_nan=False) then rejects.
+        # In both cases emit None rather than letting NaN/inf/exception
+        # escape into the metrics blob and fail the entire report.
+        def _annualize(r: float, ann: float) -> Optional[float]:
+            if 1 + r <= 0:
+                return None
+            try:
+                v = (1 + r) ** ann - 1
+            except OverflowError:
+                return None
+            return v if math.isfinite(v) else None
+
+        ann_return: Optional[float] = _annualize(total_return, ann_factor)
+        ann_market_return: Optional[float] = _annualize(market_return, ann_factor)
+        # Alpha is only defined when both legs are defined.
+        alpha: Optional[float] = (
+            ann_return - ann_market_return
+            if ann_return is not None and ann_market_return is not None
+            else None
+        )
         mean_ret   = float(np.mean(ret_arr))
 
         # Sample std (ddof=1) matches pyfolio/quantstats/vectorbt convention.
@@ -242,7 +275,9 @@ class BacktestEngine:
                 max_dd = dd
 
         wins          = int(np.sum(ret_arr > 0))
-        win_rate      = wins / ret_arr.size if ret_arr.size else 0.0
+        # ret_arr.size > 0 is guaranteed by the `if not curve` guard above
+        # plus run()'s `len(df) < 2` short-circuit.
+        win_rate      = wins / ret_arr.size
         gross_profit  = float(np.sum(ret_arr[ret_arr > 0]))
         gross_loss    = float(-np.sum(ret_arr[ret_arr < 0]))
         profit_factor: Optional[float] = (
@@ -253,10 +288,10 @@ class BacktestEngine:
             "finalNav":               round(final_nav, 2),
             "initialCapital":         self.initial_capital,
             "totalReturn":            round(total_return, 4),
-            "annualizedReturn":       round(ann_return, 4),
+            "annualizedReturn":       None if ann_return is None else round(ann_return, 4),
             "marketReturn":           round(market_return, 4),
-            "annualizedMarketReturn": round(ann_market_return, 4),
-            "alpha":                  round(ann_return - ann_market_return, 4),
+            "annualizedMarketReturn": None if ann_market_return is None else round(ann_market_return, 4),
+            "alpha":                  None if alpha is None else round(alpha, 4),
             "sharpeRatio":            None if sharpe is None else round(sharpe, 3),
             "sortinoRatio":           None if sortino is None else round(sortino, 3),
             "maxDrawdown":            round(max_dd, 4),
@@ -265,7 +300,6 @@ class BacktestEngine:
             "totalPositionChanges":   position_changes,
             "totalTradeUnits":        trade_units_total,
             "tradingDays":            trading_days,
-            "equityCurve":            curve,
         }
 
 

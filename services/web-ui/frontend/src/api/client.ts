@@ -193,17 +193,20 @@ export interface BacktestResult {
 }
 
 export interface BacktestMetrics {
-  avgSharpe: number
-  avgTotalReturn: number
-  avgMaxDrawdown: number
-  avgWinRate: number
+  // Aggregator returns null when every per-symbol entry is undefined
+  // (e.g. all symbols had <2 return bars).
+  avgSharpe: number | null
+  avgTotalReturn: number | null
+  avgMaxDrawdown: number | null
+  avgWinRate: number | null
   perSymbol?: PerSymbolMetrics[]
   chartPaths?: Record<string, string>
 }
 
 export interface PerSymbolMetrics {
   symbol: string
-  sharpeRatio: number
+  // null when fewer than 2 return samples (sample-std undefined)
+  sharpeRatio: number | null
   totalReturn: number
   maxDrawdown: number
   winRate: number

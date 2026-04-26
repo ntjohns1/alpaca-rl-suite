@@ -61,14 +61,14 @@ def _make_equity_curve(n: int = 50) -> list[dict]:
 class TestGenerateCharts:
     def test_returns_empty_dict_when_no_curve(self):
         from main import generate_charts
-        result = generate_charts("report-1", [{"symbol": "SPY", "equityCurve": []}])
+        result = generate_charts([{"symbol": "SPY", "equityCurve": []}])
         assert result == {}
 
     def test_returns_base64_png_per_symbol(self):
         from main import generate_charts
         curve = _make_equity_curve(60)
         metrics = [{"symbol": "SPY", "sharpeRatio": 1.2, "totalReturn": 0.08, "equityCurve": curve}]
-        result = generate_charts("r-1", metrics)
+        result = generate_charts(metrics)
         if result:  # matplotlib may not be available in CI
             assert "SPY" in result
             # Verify it's valid base64
@@ -82,7 +82,7 @@ class TestGenerateCharts:
             {"symbol": "SPY",  "sharpeRatio": 1.0, "totalReturn": 0.05, "equityCurve": curve},
             {"symbol": "AAPL", "sharpeRatio": 1.5, "totalReturn": 0.10, "equityCurve": curve},
         ]
-        result = generate_charts("r-2", metrics)
+        result = generate_charts(metrics)
         if result:
             assert set(result.keys()) == {"SPY", "AAPL"}
 
@@ -182,6 +182,58 @@ class TestRunBacktestEndpoint:
             "name": "test",
             "startDate": "2024-01-01",
             "endDate": "2024-12-31",
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_empty_symbols_list(self, app_client):
+        # Without min_length=1, this would build `WHERE symbol IN ()` and
+        # crash deep in the background task with a Postgres syntax error.
+        # Pin the 422 so a future refactor can't quietly weaken the guard.
+        resp = app_client.post("/backtest/run", json={
+            "name": "test",
+            "symbols": [],
+            "startDate": "2024-01-01",
+            "endDate": "2024-12-31",
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_zero_initial_capital(self, app_client):
+        resp = app_client.post("/backtest/run", json={
+            "name": "test",
+            "symbols": ["SPY"],
+            "startDate": "2024-01-01",
+            "endDate": "2024-12-31",
+            "initialCapital": 0,
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_negative_initial_capital(self, app_client):
+        resp = app_client.post("/backtest/run", json={
+            "name": "test",
+            "symbols": ["SPY"],
+            "startDate": "2024-01-01",
+            "endDate": "2024-12-31",
+            "initialCapital": -1,
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_negative_trading_cost_bps(self, app_client):
+        resp = app_client.post("/backtest/run", json={
+            "name": "test",
+            "symbols": ["SPY"],
+            "startDate": "2024-01-01",
+            "endDate": "2024-12-31",
+            "tradingCostBps": -1,
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_negative_time_cost_bps(self, app_client):
+        resp = app_client.post("/backtest/run", json={
+            "name": "test",
+            "symbols": ["SPY"],
+            "startDate": "2024-01-01",
+            "endDate": "2024-12-31",
+            "timeCostBps": -1,
         })
         assert resp.status_code == 422
 

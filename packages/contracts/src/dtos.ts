@@ -96,10 +96,12 @@ export const BacktestMetricsSchema = z.object({
   initialCapital: z.number(),
   finalNav: z.number(),
   totalReturn: z.number(),
-  annualizedReturn: z.number(),
+  // null when NAV ≤ 0 (e.g. short-position blowup); annualization is undefined
+  annualizedReturn: z.number().nullable(),
   marketReturn: z.number(),
-  annualizedMarketReturn: z.number(),
-  alpha: z.number(),
+  annualizedMarketReturn: z.number().nullable(),
+  // null when either leg's annualized return is undefined
+  alpha: z.number().nullable(),
   // null when fewer than 2 return samples (sample-std is undefined)
   sharpeRatio: z.number().nullable(),
   // null when downside deviation is undefined with a positive mean (no losses)

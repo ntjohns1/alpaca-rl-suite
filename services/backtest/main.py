@@ -14,7 +14,7 @@ import pandas as pd
 import psycopg2
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ def load_policy_from_s3(policy_s3_path: str):
 # ─────────────────────────────────────────
 # Chart generation
 # ─────────────────────────────────────────
-def generate_charts(report_id: str, all_metrics: list[dict]) -> dict:
+def generate_charts(all_metrics: list[dict]) -> dict:
     """
     Generate equity curve, drawdown, and position charts.
     Returns dict of {chart_name: base64_png_string}.
@@ -125,8 +125,11 @@ def generate_charts(report_id: str, all_metrics: list[dict]) -> dict:
         ax1.plot(range(len(navs)), navs, label="Strategy", color="steelblue", linewidth=1.5)
         ax1.plot(range(len(market_nav)), market_nav, label="Buy & Hold", color="orange",
                  linewidth=1.2, linestyle="--")
-        ax1.set_title(f"{symbol} – Equity Curve  |  Sharpe: {m.get('sharpeRatio', 0):.2f}  "
-                      f"Return: {m.get('totalReturn', 0)*100:.1f}%")
+        sharpe = m.get("sharpeRatio")
+        sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "n/a"
+        total_ret = m.get("totalReturn") or 0
+        ax1.set_title(f"{symbol} – Equity Curve  |  Sharpe: {sharpe_str}  "
+                      f"Return: {total_ret*100:.1f}%")
         ax1.set_ylabel("Portfolio Value ($)")
         ax1.legend()
         ax1.grid(True, alpha=0.3)
@@ -271,18 +274,28 @@ def run_backtest_task(report_id: str, config: dict):
             update_backtest_record(report_id, "failed", {}, error="Insufficient data for all symbols")
             return
 
-        # Aggregate metrics across symbols
+        # Aggregate metrics across symbols. sharpeRatio (and sortinoRatio,
+        # profitFactor) can be None per the engine contract — average over
+        # the defined entries only, and emit None if every symbol's value
+        # is undefined. Mean is computed in plain Python because np.mean
+        # raises TypeError on None.
+        def _mean_skip_none(xs: list) -> Optional[float]:
+            defined = [x for x in xs if x is not None]
+            if not defined:
+                return None
+            return float(sum(defined) / len(defined))
+
         agg = {
             "symbols": symbols,
             "perSymbol": [{k: v for k, v in m.items() if k != "equityCurve"} for m in all_metrics],
-            "avgSharpe":      np.mean([m["sharpeRatio"] for m in all_metrics]),
-            "avgTotalReturn": np.mean([m["totalReturn"] for m in all_metrics]),
-            "avgMaxDrawdown": np.mean([m["maxDrawdown"] for m in all_metrics]),
-            "avgWinRate":     np.mean([m["winRate"] for m in all_metrics]),
+            "avgSharpe":      _mean_skip_none([m["sharpeRatio"] for m in all_metrics]),
+            "avgTotalReturn": _mean_skip_none([m["totalReturn"] for m in all_metrics]),
+            "avgMaxDrawdown": _mean_skip_none([m["maxDrawdown"] for m in all_metrics]),
+            "avgWinRate":     _mean_skip_none([m["winRate"] for m in all_metrics]),
         }
 
         # Generate and upload charts
-        charts     = generate_charts(report_id, all_metrics)
+        charts     = generate_charts(all_metrics)
         chart_paths = upload_charts_to_s3(report_id, charts) if charts else {}
         agg["chartPaths"] = chart_paths
 
@@ -299,7 +312,12 @@ def run_backtest_task(report_id: str, config: dict):
         )
 
         update_backtest_record(report_id, "completed", agg, artifact_path=s3_path)
-        log.info(f"Backtest {report_id} completed: sharpe={agg['avgSharpe']:.3f}")
+        sharpe_str = (
+            f"{agg['avgSharpe']:.3f}"
+            if agg["avgSharpe"] is not None
+            else "n/a"
+        )
+        log.info(f"Backtest {report_id} completed: sharpe={sharpe_str}")
 
     except Exception as e:
         log.error(f"Backtest {report_id} failed: {e}")
@@ -326,12 +344,14 @@ def health():
 
 class BacktestRequest(BaseModel):
     name: str
-    symbols: list[str]
+    # Empty symbols list would build `WHERE f.symbol IN ()` and crash the
+    # background task with a Postgres syntax error.
+    symbols: list[str] = Field(..., min_length=1)
     startDate: str
     endDate: str
-    initialCapital: float = 100_000
-    tradingCostBps: float = 10
-    timeCostBps: float = 1
+    initialCapital: float = Field(default=100_000, gt=0)
+    tradingCostBps: float = Field(default=10, ge=0)
+    timeCostBps: float = Field(default=1, ge=0)
     policyId: Optional[str] = None
     seed: Optional[int] = None
 

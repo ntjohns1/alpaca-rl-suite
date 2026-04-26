@@ -140,19 +140,20 @@ class TestMetricsCalculation:
 
 
 class TestBiasGuards:
-    def test_no_lookahead_on_hold_policy(self):
+    def test_hold_policy_position_zero_zero_return(self):
         """
-        A HOLD policy should produce exactly market returns scaled by 0 position.
-        nav should barely change (only time_cost_bps per bar).
+        With HOLD (action=1) the engine never takes a position (always 0).
+        With time_cost_bps=0, every strategy_ret must be exactly 0 — no
+        trades happen so trading_cost is irrelevant. This guards against
+        any silent leak of market_ret into strategy_ret when position=0.
         """
         df = _make_df(100)
-        engine = BacktestEngine(trading_cost_bps=10, time_cost_bps=0)
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
         def hold_policy(_): return 1  # HOLD → position=0
         result = engine.run(df, hold_policy)
-        # All strategy returns should be ≤ 0 (only cost, no position)
         for bar in result["equityCurve"]:
-            assert bar["strategy_ret"] <= 1e-9, (
-                f"HOLD with 0 position should not gain: {bar['strategy_ret']}"
+            assert bar["strategy_ret"] == 0.0, (
+                f"HOLD with position=0 should not move NAV: {bar['strategy_ret']}"
             )
 
     def test_empty_dataframe_returns_empty_metrics(self):
@@ -304,7 +305,16 @@ class TestCorrectnessFixes:
         df = _make_df(30)
         df.loc[5, "rsi"] = np.nan
         df.loc[10, "macd"] = np.nan
-        nan_times = {str(df.loc[5, "time"]), str(df.loc[10, "time"])}
+        # Match the engine's wire format (tz-aware ISO 8601). Building this
+        # set with str(Timestamp) — space-separator, no tz — would make it
+        # tautologically disjoint from curve_times, defeating the whole
+        # point of the assertion.
+        def _iso(ts):
+            t = pd.Timestamp(ts)
+            if t.tzinfo is None:
+                t = t.tz_localize("UTC")
+            return t.isoformat()
+        nan_times = {_iso(df.loc[5, "time"]), _iso(df.loc[10, "time"])}
 
         seen_nan = {"flag": False}
         def watchdog_policy(state):
@@ -429,15 +439,12 @@ class TestMetricDefinitions:
     """
 
     def _fixture(self, rets: list[float]) -> pd.DataFrame:
-        # rets is the realized next-bar return series. Engine shifts ret_1d
-        # by -1, so to make realized_next[i] == rets[i] we put rets[i+1] in
-        # ret_1d[i] and append a sentinel terminal row.
+        # rets is the realized next-bar return series the policy will earn.
+        # Engine shifts ret_1d by -1 to compute realized_next, so
+        # realized_next[i] = df.ret_1d[i+1]. To make realized_next[i] == rets[i]
+        # for i in 0..len(rets)-1, set df.ret_1d[1..n-1] = rets. df.ret_1d[0]
+        # is a don't-care (it's never read as a realized return).
         n = len(rets) + 1
-        ret_1d = list(rets) + [0.0]
-        # Shift expectation: bar i's realized_next is df.ret_1d[i+1].
-        # We want realized_next[i] = rets[i] for i in 0..len(rets)-1.
-        # That means df.ret_1d[i+1] = rets[i] → df.ret_1d[1..n-1] = rets,
-        # and df.ret_1d[0] is a don't-care.
         ret_1d = [0.0] + list(rets)
         return pd.DataFrame({
             "time":    pd.date_range("2024-01-01", periods=n, freq="B"),
@@ -539,6 +546,65 @@ class TestBoundaryValidation:
             assert "duplicate" in str(e).lower()
             return
         raise AssertionError("expected ValueError for duplicate timestamps")
+
+
+class TestNavBlowup:
+    def test_short_position_blowup_emits_none_not_nan(self):
+        """
+        With a short position (action=0 → new_position=-1) and a large
+        positive market_ret > 1.0, strategy_ret < -1 drives NAV ≤ 0. The
+        annualization (1 + total_return) ** frac is then NaN (or complex).
+        Engine must surface annualizedReturn/alpha as None so the metrics
+        blob stays JSON-serializable with allow_nan=False.
+        """
+        n = 5
+        # ret_1d[1] = 1.5 → realized_next[0] = 1.5. SHORT (-1) earns -1.5
+        # at bar 0, NAV → -50_000.
+        df = pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=n, freq="B"),
+            "ret_1d":  [0.0, 1.5, 0.0, 0.0, 0.0],
+            "ret_2d":  [0.0] * n, "ret_5d": [0.0] * n,
+            "ret_10d": [0.0] * n, "ret_21d": [0.0] * n,
+            "rsi":     [50.0] * n, "macd": [0.0] * n, "atr": [1.0] * n,
+            "stoch":   [50.0] * n, "ultosc": [50.0] * n,
+        })
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        def short_first_then_hold(state):
+            # decision bars are i=0..3; SHORT once at i=0, then HOLD.
+            return 0 if state[0] == 0.0 and state[1] == 0.0 else 1
+        # Simpler: always SHORT.
+        result = engine.run(df, lambda _: 0)
+        assert result["annualizedReturn"] is None
+        assert result["alpha"] is None
+        # The whole thing must round-trip through strict JSON.
+        json.dumps(result, allow_nan=False)
+
+    def test_positive_overflow_emits_none_not_inf(self):
+        """
+        Symmetric guard for the upper end: a corrupt ret_1d producing a
+        massive single-bar gain (LONG into a 1500%+ next-bar return)
+        makes (1 + total_return) ** ann_factor either OverflowError or
+        saturate to +inf — both would escape json.dumps(allow_nan=False)
+        and fail the report. Engine must surface None instead.
+        """
+        # 2-row df → 1 decision bar. ret_1d[1] = 20.0 → realized_next[0] = 20.
+        # LONG (+1) earns +20 on a single bar. ann_factor = 252 / 1 = 252.
+        # (1 + 20) ** 252 overflows.
+        df = pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=2, freq="B"),
+            "ret_1d":  [0.0, 20.0],
+            "ret_2d":  [0.0, 0.0], "ret_5d": [0.0, 0.0],
+            "ret_10d": [0.0, 0.0], "ret_21d": [0.0, 0.0],
+            "rsi":     [50.0, 50.0], "macd": [0.0, 0.0], "atr": [1.0, 1.0],
+            "stoch":   [50.0, 50.0], "ultosc": [50.0, 50.0],
+        })
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+        assert result["annualizedReturn"] is None
+        assert result["annualizedMarketReturn"] is None
+        assert result["alpha"] is None
+        # Must round-trip through strict JSON.
+        json.dumps(result, allow_nan=False)
 
 
 class TestJsonSerialization:
