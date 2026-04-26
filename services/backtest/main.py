@@ -292,7 +292,10 @@ def run_backtest_task(report_id: str, config: dict):
         s3.put_object(
             Bucket=S3_BUCKET,
             Key=s3_path,
-            Body=json.dumps({"metrics": agg, "perSymbol": all_metrics}).encode(),
+            Body=json.dumps(
+                {"metrics": agg, "perSymbol": all_metrics},
+                allow_nan=False,
+            ).encode(),
         )
 
         update_backtest_record(report_id, "completed", agg, artifact_path=s3_path)

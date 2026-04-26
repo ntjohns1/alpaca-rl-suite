@@ -160,12 +160,13 @@ class BacktestEngine:
         mean_ret   = float(np.mean(ret_arr))
         sharpe     = float(mean_ret / (np.std(ret_arr) + 1e-9) * np.sqrt(252))
 
-        # Sortino: only report inf when the strategy actually generates a
-        # positive mean return with zero downside deviation. A flat or
-        # negative-mean strategy with no losses is not infinitely good.
+        # Undefined Sortino (no losses + positive mean) is reported as None
+        # rather than float('inf'): strict JSON (RFC 7159) cannot represent
+        # Infinity, and emitting it corrupts the S3 artifact and DB metrics
+        # blob. A flat or negative-mean no-loss strategy returns 0.0.
         neg_rets = ret_arr[ret_arr < 0]
         if neg_rets.size == 0:
-            sortino = float("inf") if mean_ret > 0 else 0.0
+            sortino: Optional[float] = None if mean_ret > 0 else 0.0
         else:
             sortino = float(
                 mean_ret / (np.std(neg_rets) + 1e-9) * np.sqrt(252)
@@ -184,7 +185,9 @@ class BacktestEngine:
         win_rate      = wins / len(rets) if rets else 0.0
         gross_profit  = sum(r for r in rets if r > 0)
         gross_loss    = abs(sum(r for r in rets if r < 0))
-        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
+        profit_factor: Optional[float] = (
+            gross_profit / gross_loss if gross_loss > 0 else None
+        )
 
         return {
             "finalNav":               round(final_nav, 2),
@@ -195,10 +198,10 @@ class BacktestEngine:
             "annualizedMarketReturn": round(ann_market_return, 4),
             "alpha":                  round(ann_return - ann_market_return, 4),
             "sharpeRatio":            round(sharpe, 3),
-            "sortinoRatio":           round(sortino, 3),
+            "sortinoRatio":           None if sortino is None else round(sortino, 3),
             "maxDrawdown":            round(max_dd, 4),
             "winRate":                round(win_rate, 4),
-            "profitFactor":           round(profit_factor, 3),
+            "profitFactor":           None if profit_factor is None else round(profit_factor, 3),
             "totalTrades":            position_changes,
             "totalPositionChanges":   position_changes,
             "totalTradeUnits":        trade_units_total,

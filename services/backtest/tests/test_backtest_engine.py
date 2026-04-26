@@ -4,6 +4,7 @@ Unit tests for BacktestEngine — no DB, S3, or network required.
 import sys
 import os
 import math
+import json
 
 import pandas as pd
 import numpy as np
@@ -238,8 +239,12 @@ class TestCorrectnessFixes:
         result = engine.run(df, buy_and_hold_policy)
         assert abs(result["alpha"]) < 1e-3
 
-    def test_sortino_is_inf_with_no_losses(self):
-        """A policy that never loses should report sortino as inf, not nan."""
+    def test_sortino_is_none_with_no_losses(self):
+        """
+        A policy with no losing bars and a positive mean has undefined
+        Sortino. We surface it as None (JSON null) rather than float('inf'),
+        which would emit `Infinity` and corrupt the metrics blob downstream.
+        """
         n = 20
         dates = pd.date_range("2021-01-01", periods=n, freq="B")
         df = pd.DataFrame({
@@ -251,8 +256,8 @@ class TestCorrectnessFixes:
         })
         engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
         result = engine.run(df, buy_and_hold_policy)
-        assert math.isinf(result["sortinoRatio"])
-        assert not math.isnan(result["sortinoRatio"])
+        assert result["sortinoRatio"] is None
+        assert result["profitFactor"] is None
 
     def test_nan_features_do_not_leak_to_policy(self):
         """NaN in feature columns should be coerced to 0.0 before policy sees them."""
@@ -371,6 +376,32 @@ class TestTerminalBarAndTradeUnits:
         result = engine.run(df, hold)
         assert result["sortinoRatio"] == 0.0
         assert not math.isinf(result["sortinoRatio"])
+
+
+class TestJsonSerialization:
+    def test_no_loss_result_is_strict_json_serializable(self):
+        """
+        Regression: results from a no-loss backtest must serialize as strict
+        JSON (RFC 7159), with no `Infinity`/`NaN` tokens that would corrupt
+        the S3 artifact and DB metrics blob.
+        """
+        n = 20
+        df = pd.DataFrame({
+            "time":    pd.date_range("2021-01-01", periods=n, freq="B"),
+            "ret_1d":  np.full(n, 0.01),
+            "ret_2d":  np.zeros(n), "ret_5d": np.zeros(n),
+            "ret_10d": np.zeros(n), "ret_21d": np.zeros(n),
+            "rsi":     [50.0] * n, "macd": [0.0] * n, "atr": [1.0] * n,
+            "stoch":   [50.0] * n, "ultosc": [50.0] * n,
+        })
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+        # allow_nan=False is what every strict parser does — this would raise
+        # ValueError if any inf/nan slipped through.
+        blob = json.dumps(result, allow_nan=False)
+        roundtrip = json.loads(blob)
+        assert roundtrip["sortinoRatio"] is None
+        assert roundtrip["profitFactor"] is None
 
 
 class TestPerRunRngReset:
