@@ -100,7 +100,8 @@ export const BacktestMetricsSchema = z.object({
   marketReturn: z.number(),
   annualizedMarketReturn: z.number(),
   alpha: z.number(),
-  sharpeRatio: z.number(),
+  // null when fewer than 2 return samples (sample-std is undefined)
+  sharpeRatio: z.number().nullable(),
   // null when downside deviation is undefined with a positive mean (no losses)
   sortinoRatio: z.number().nullable(),
   maxDrawdown: z.number(),

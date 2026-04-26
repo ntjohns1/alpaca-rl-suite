@@ -377,6 +377,86 @@ class TestTerminalBarAndTradeUnits:
         assert not math.isinf(result["sortinoRatio"])
 
 
+class TestMetricDefinitions:
+    """
+    Pin Sharpe/Sortino to industry-convention formulas (pyfolio/quantstats):
+      - Sharpe uses sample std (ddof=1)
+      - Sortino uses downside deviation = sqrt(mean(min(r,0)^2)) over ALL bars
+    """
+
+    def _fixture(self, rets: list[float]) -> pd.DataFrame:
+        # rets is the realized next-bar return series. Engine shifts ret_1d
+        # by -1, so to make realized_next[i] == rets[i] we put rets[i+1] in
+        # ret_1d[i] and append a sentinel terminal row.
+        n = len(rets) + 1
+        ret_1d = list(rets) + [0.0]
+        # Shift expectation: bar i's realized_next is df.ret_1d[i+1].
+        # We want realized_next[i] = rets[i] for i in 0..len(rets)-1.
+        # That means df.ret_1d[i+1] = rets[i] → df.ret_1d[1..n-1] = rets,
+        # and df.ret_1d[0] is a don't-care.
+        ret_1d = [0.0] + list(rets)
+        return pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=n, freq="B"),
+            "ret_1d":  ret_1d,
+            "ret_2d":  [0.0] * n, "ret_5d": [0.0] * n,
+            "ret_10d": [0.0] * n, "ret_21d": [0.0] * n,
+            "rsi":     [50.0] * n, "macd": [0.0] * n, "atr": [1.0] * n,
+            "stoch":   [50.0] * n, "ultosc": [50.0] * n,
+        })
+
+    def test_sharpe_uses_sample_std_ddof1(self):
+        # Buy-and-hold (always LONG, position=1) → strategy_ret == market_ret
+        # since trading_cost=0 (one trade at bar 0 from flat→long, 0 carry
+        # cost on subsequent bars; we drop bar 0 from the assertion below).
+        # We avoid the boundary noise by using a long enough series.
+        rng = np.random.default_rng(0)
+        rets = rng.normal(0.0005, 0.012, 250).tolist()
+        df = self._fixture(rets)
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+
+        # Reference: per-bar strategy_ret series, std with ddof=1.
+        actual_rets = np.array(
+            [bar["strategy_ret"] for bar in result["equityCurve"]]
+        )
+        ref_sharpe = float(
+            np.mean(actual_rets) / (np.std(actual_rets, ddof=1) + 1e-12)
+            * np.sqrt(252)
+        )
+        # Engine rounds sharpe to 3 dp; allow that tolerance.
+        assert abs(result["sharpeRatio"] - ref_sharpe) < 1e-2
+
+    def test_sortino_uses_downside_deviation_over_all_bars(self):
+        # Mixed series with both wins and losses so downside_dev > 0.
+        rng = np.random.default_rng(1)
+        rets = rng.normal(0.0002, 0.015, 200).tolist()
+        df = self._fixture(rets)
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+
+        actual_rets = np.array(
+            [bar["strategy_ret"] for bar in result["equityCurve"]]
+        )
+        downside = np.minimum(actual_rets, 0.0)
+        dd_dev = float(np.sqrt(np.mean(downside ** 2)))
+        ref_sortino = float(np.mean(actual_rets) / dd_dev * np.sqrt(252))
+        assert abs(result["sortinoRatio"] - ref_sortino) < 1e-2
+
+    def test_sharpe_none_with_single_return_bar(self):
+        # 2-row df → 1 return-generating bar → ddof=1 std undefined.
+        df = pd.DataFrame({
+            "time":    pd.date_range("2024-01-01", periods=2, freq="B"),
+            "ret_1d":  [0.0, 0.01],
+            "ret_2d":  [0.0, 0.0], "ret_5d": [0.0, 0.0],
+            "ret_10d": [0.0, 0.0], "ret_21d": [0.0, 0.0],
+            "rsi":     [50.0, 50.0], "macd": [0.0, 0.0], "atr": [1.0, 1.0],
+            "stoch":   [50.0, 50.0], "ultosc": [50.0, 50.0],
+        })
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, buy_and_hold_policy)
+        assert result["sharpeRatio"] is None
+
+
 class TestJsonSerialization:
     def test_no_loss_result_is_strict_json_serializable(self):
         """

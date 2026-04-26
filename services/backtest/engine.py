@@ -84,6 +84,14 @@ class BacktestEngine:
         equity_curve: list[dict] = []
         position_changes = 0
         trade_units_total = 0
+        # Unrounded buffers for metric computation. Reading metrics off the
+        # rounded equity curve compounds rounding error across N bars
+        # (~1e-4 on totalReturn at 252 bars w/ strategy_ret rounded to 1e-6),
+        # which is enough to flip the sign of small alpha or move a borderline
+        # Sharpe across a promotion threshold.
+        navs_raw: list[float] = []
+        market_navs_raw: list[float] = []
+        rets_raw: list[float] = []
 
         # Iterate N-1 bars. The final row is the close of the last return
         # period; no new action is taken against it.
@@ -117,6 +125,10 @@ class BacktestEngine:
                 position_changes += 1
                 trade_units_total += n_trade_units
 
+            navs_raw.append(nav)
+            market_navs_raw.append(market_nav)
+            rets_raw.append(strategy_ret)
+
             equity_curve.append({
                 "time":         str(row["time"]),
                 "nav":          round(nav, 4),
@@ -131,6 +143,9 @@ class BacktestEngine:
 
         return self._compute_metrics(
             equity_curve,
+            navs=navs_raw,
+            market_navs=market_navs_raw,
+            rets=rets_raw,
             position_changes=position_changes,
             trade_units_total=trade_units_total,
         )
@@ -138,53 +153,64 @@ class BacktestEngine:
     def _compute_metrics(
         self,
         curve: list[dict],
+        navs: list[float],
+        market_navs: list[float],
+        rets: list[float],
         position_changes: int,
         trade_units_total: int,
     ) -> dict:
         if not curve:
             return {}
 
-        navs  = [r["nav"] for r in curve]
-        mnavs = [r["market_nav"] for r in curve]
-        rets  = [r["strategy_ret"] for r in curve]
+        ret_arr    = np.asarray(rets, dtype=float)
+        nav_arr    = np.asarray(navs, dtype=float)
+        mnav_arr   = np.asarray(market_navs, dtype=float)
 
-        final_nav     = navs[-1]
+        final_nav     = float(nav_arr[-1])
         total_return  = (final_nav - self.initial_capital) / self.initial_capital
-        market_return = (mnavs[-1] - self.initial_capital) / self.initial_capital
+        market_return = (float(mnav_arr[-1]) - self.initial_capital) / self.initial_capital
         trading_days  = len(curve)
         ann_factor    = 252 / trading_days if trading_days > 0 else 1
 
         ann_return = (1 + total_return) ** ann_factor - 1
         ann_market_return = (1 + market_return) ** ann_factor - 1
-        ret_arr    = np.array(rets)
         mean_ret   = float(np.mean(ret_arr))
-        sharpe     = float(mean_ret / (np.std(ret_arr) + 1e-9) * np.sqrt(252))
 
-        # Undefined Sortino (no losses + positive mean) is reported as None
-        # rather than float('inf'): strict JSON (RFC 7159) cannot represent
-        # Infinity, and emitting it corrupts the S3 artifact and DB metrics
-        # blob. A flat or negative-mean no-loss strategy returns 0.0.
-        neg_rets = ret_arr[ret_arr < 0]
-        if neg_rets.size == 0:
-            sortino: Optional[float] = None if mean_ret > 0 else 0.0
-        else:
-            sortino = float(
-                mean_ret / (np.std(neg_rets) + 1e-9) * np.sqrt(252)
+        # Sample std (ddof=1) matches pyfolio/quantstats/vectorbt convention.
+        # Need at least 2 samples; below that, Sharpe is undefined.
+        if ret_arr.size > 1:
+            std_ret = float(np.std(ret_arr, ddof=1))
+            sharpe: Optional[float] = float(
+                mean_ret / (std_ret + 1e-12) * np.sqrt(252)
             )
+        else:
+            sharpe = None
+
+        # Standard Sortino: downside deviation = sqrt(mean(min(r, 0)^2))
+        # over ALL bars (target=0), not std() of just-the-negatives. Matches
+        # the textbook/pyfolio definition; the prior formula structurally
+        # disagreed with every third-party tool.
+        downside = np.minimum(ret_arr, 0.0)
+        dd_dev   = float(np.sqrt(np.mean(downside ** 2)))
+        if dd_dev > 0:
+            sortino: Optional[float] = float(mean_ret / dd_dev * np.sqrt(252))
+        else:
+            # Undefined: surfaced as None (RFC 7159 — see C1).
+            sortino = None if mean_ret > 0 else 0.0
 
         peak   = self.initial_capital
         max_dd = 0.0
-        for n in navs:
+        for n in nav_arr:
             if n > peak:
                 peak = n
             dd = (peak - n) / peak
             if dd > max_dd:
                 max_dd = dd
 
-        wins          = sum(1 for r in rets if r > 0)
-        win_rate      = wins / len(rets) if rets else 0.0
-        gross_profit  = sum(r for r in rets if r > 0)
-        gross_loss    = abs(sum(r for r in rets if r < 0))
+        wins          = int(np.sum(ret_arr > 0))
+        win_rate      = wins / ret_arr.size if ret_arr.size else 0.0
+        gross_profit  = float(np.sum(ret_arr[ret_arr > 0]))
+        gross_loss    = float(-np.sum(ret_arr[ret_arr < 0]))
         profit_factor: Optional[float] = (
             gross_profit / gross_loss if gross_loss > 0 else None
         )
@@ -197,7 +223,7 @@ class BacktestEngine:
             "marketReturn":           round(market_return, 4),
             "annualizedMarketReturn": round(ann_market_return, 4),
             "alpha":                  round(ann_return - ann_market_return, 4),
-            "sharpeRatio":            round(sharpe, 3),
+            "sharpeRatio":            None if sharpe is None else round(sharpe, 3),
             "sortinoRatio":           None if sortino is None else round(sortino, 3),
             "maxDrawdown":            round(max_dd, 4),
             "winRate":                round(win_rate, 4),
