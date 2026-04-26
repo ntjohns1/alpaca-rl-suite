@@ -22,6 +22,18 @@ class BacktestEngine:
         time_cost_bps: float = 1,
         seed: Optional[int] = None,
     ):
+        if initial_capital <= 0:
+            raise ValueError(
+                f"initial_capital must be > 0; got {initial_capital!r}"
+            )
+        if trading_cost_bps < 0:
+            raise ValueError(
+                f"trading_cost_bps must be >= 0; got {trading_cost_bps!r}"
+            )
+        if time_cost_bps < 0:
+            raise ValueError(
+                f"time_cost_bps must be >= 0; got {time_cost_bps!r}"
+            )
         self.initial_capital = initial_capital
         self.trading_cost_bps = trading_cost_bps / 10_000
         self.time_cost_bps = time_cost_bps / 10_000
@@ -76,15 +88,29 @@ class BacktestEngine:
             the start of every run() call so per-symbol results are
             reproducible regardless of the order in which symbols are run.
         """
-        # Need at least two rows to form one return period.
-        if len(df) < 2:
-            return {}
-
         # Per-run RNG reset so ordering of run() calls doesn't shift results.
         if self._seed is not None:
             self.rng = np.random.default_rng(self._seed)
 
+        # Drop the warmup window: any row missing a feature value (e.g. ret_21d
+        # in the first 21 bars of a fresh symbol) is excluded entirely. This
+        # replaces the prior silent NaN→0.0 substitution, which fed a "neutral"
+        # signal into policies that read 0 as a valid extreme value.
+        df = df.dropna(subset=FEATURE_COLS).copy()
+
+        # Need at least two rows to form one return period.
+        if len(df) < 2:
+            return {}
+
         df = df.sort_values("time").reset_index(drop=True)
+        # Time column must be strictly increasing and unique. Duplicates or
+        # out-of-order rows indicate a data bug upstream (the DB query orders
+        # by symbol, time) and would produce nonsensical return periods.
+        if not df["time"].is_unique:
+            raise ValueError("df['time'] contains duplicate timestamps")
+        if not df["time"].is_monotonic_increasing:
+            raise ValueError("df['time'] is not strictly increasing after sort")
+
         # Realized return for the decision made at bar t is next bar's ret_1d.
         realized_next = df["ret_1d"].shift(-1).to_numpy()
 
@@ -108,10 +134,8 @@ class BacktestEngine:
         n_decision_bars = len(df) - 1
         for i in range(n_decision_bars):
             row = df.iloc[i]
-            state = [
-                0.0 if pd.isna(row[c]) else float(row[c])
-                for c in FEATURE_COLS
-            ]
+            # NaN-bearing rows were dropped above; features here are clean.
+            state = [float(row[c]) for c in FEATURE_COLS]
             action = policy_fn(state)
             if action not in (0, 1, 2):
                 raise ValueError(

@@ -293,19 +293,30 @@ class TestCorrectnessFixes:
         assert result["sortinoRatio"] is None
         assert result["profitFactor"] is None
 
-    def test_nan_features_do_not_leak_to_policy(self):
-        """NaN in feature columns should be coerced to 0.0 before policy sees them."""
+    def test_nan_feature_rows_are_dropped(self):
+        """
+        Rows with any NaN feature value are dropped entirely — the policy
+        never sees NaN, AND it never sees a silently-substituted 0.0 either
+        (which the previous behavior produced and could be misread as a
+        valid extreme signal). Verify both: no NaN reaches the policy AND
+        the dropped rows don't appear in the equity curve.
+        """
         df = _make_df(30)
         df.loc[5, "rsi"] = np.nan
         df.loc[10, "macd"] = np.nan
+        nan_times = {str(df.loc[5, "time"]), str(df.loc[10, "time"])}
+
         seen_nan = {"flag": False}
         def watchdog_policy(state):
             if any(math.isnan(x) for x in state):
                 seen_nan["flag"] = True
             return 1
         engine = BacktestEngine()
-        engine.run(df, watchdog_policy)
+        result = engine.run(df, watchdog_policy)
+
         assert not seen_nan["flag"]
+        curve_times = {bar["time"] for bar in result["equityCurve"]}
+        assert curve_times.isdisjoint(nan_times)
 
     def test_invalid_action_raises(self):
         df = _make_df(10)
@@ -488,6 +499,46 @@ class TestMetricDefinitions:
         engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
         result = engine.run(df, buy_and_hold_policy)
         assert result["sharpeRatio"] is None
+
+
+class TestBoundaryValidation:
+    def test_init_rejects_zero_capital(self):
+        try:
+            BacktestEngine(initial_capital=0)
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for initial_capital=0")
+
+    def test_init_rejects_negative_capital(self):
+        try:
+            BacktestEngine(initial_capital=-100)
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for negative initial_capital")
+
+    def test_init_rejects_negative_trading_cost(self):
+        try:
+            BacktestEngine(trading_cost_bps=-1)
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for negative trading_cost_bps")
+
+    def test_init_rejects_negative_time_cost(self):
+        try:
+            BacktestEngine(time_cost_bps=-1)
+        except ValueError:
+            return
+        raise AssertionError("expected ValueError for negative time_cost_bps")
+
+    def test_run_rejects_duplicate_timestamps(self):
+        df = _make_df(10)
+        df.loc[5, "time"] = df.loc[4, "time"]
+        try:
+            BacktestEngine().run(df, buy_and_hold_policy)
+        except ValueError as e:
+            assert "duplicate" in str(e).lower()
+            return
+        raise AssertionError("expected ValueError for duplicate timestamps")
 
 
 class TestJsonSerialization:
