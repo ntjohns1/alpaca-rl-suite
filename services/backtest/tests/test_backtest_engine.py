@@ -225,6 +225,39 @@ class TestCorrectnessFixes:
             f"Look-ahead leak: totalReturn={result['totalReturn']}"
         )
 
+    def test_no_lookahead_on_secondary_features(self):
+        """
+        The look-ahead fix only shifts ret_1d for the realized return.
+        Other feature columns flow into the state vector untouched, and a
+        cheating policy that keys off any of them must NOT earn riskless
+        profit — because we treat all backward-looking features at row t
+        as known-at-t, and the realized return is still next-bar's ret_1d.
+
+        This test reads state[1] (ret_2d) — perfectly antiphased with the
+        realized next-bar return — to prove the engine doesn't leak via
+        secondary features.
+        """
+        n = 50
+        # ret_1d alternates ±0.02. realized_next[i] = ret_1d[i+1] = -ret_1d[i].
+        # We set ret_2d[i] = ret_1d[i], so a policy that goes LONG when
+        # state[1] (ret_2d) > 0 deliberately bets on the wrong direction
+        # of the realized return. If anything were leaking, this would win.
+        rets = np.array([0.02 if i % 2 == 0 else -0.02 for i in range(n)])
+        df = pd.DataFrame({
+            "time":    pd.date_range("2021-01-01", periods=n, freq="B"),
+            "ret_1d":  rets,
+            "ret_2d":  rets,
+            "ret_5d":  rets, "ret_10d": rets, "ret_21d": rets,
+            "rsi":     50.0, "macd": 0.0, "atr": 1.0, "stoch": 50.0, "ultosc": 50.0,
+        })
+        def cheat_on_ret_2d(state):
+            return 2 if state[1] > 0 else 0
+        engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
+        result = engine.run(df, cheat_on_ret_2d)
+        assert result["totalReturn"] <= 0.0, (
+            f"Look-ahead leak via state[1]: totalReturn={result['totalReturn']}"
+        )
+
     def test_alpha_zero_on_flat_market(self):
         """Buy-and-hold on a zero-return market should produce ~0 alpha."""
         n = 100

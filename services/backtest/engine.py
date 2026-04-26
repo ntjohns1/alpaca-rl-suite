@@ -51,11 +51,21 @@ class BacktestEngine:
             (0=SHORT, 1=HOLD, 2=LONG). Must return 0, 1, or 2.
         Returns: metrics dict + equityCurve list.
 
+        Caller contract — feature columns must be backward-looking:
+          All ret_Nd columns and all indicators (rsi, macd, atr, stoch,
+          ultosc) at row t must be computable from prices/data up to and
+          including bar t (close-of-bar-t or earlier). The engine cannot
+          enforce this — if the caller computes ret_5d as
+          `close.pct_change(-5)` or otherwise leaks future information,
+          the engine will silently produce inflated alpha. The look-ahead
+          fix below shifts ret_1d for the *realized return* the policy
+          earns; it does NOT scrub the feature vector.
+
         Semantics:
-          - No look-ahead: the action decided at bar t earns the realized
-            return at bar t+1 (ret_1d shifted by -1). A DataFrame with N rows
-            produces N-1 return-generating bars; the terminal row is the
-            final close and contributes no P&L, no cost, and no trade count.
+          - No look-ahead on the realized return: the action decided at
+            bar t earns ret_1d at bar t+1. A DataFrame with N rows produces
+            N-1 return-generating bars; the terminal row is the final close
+            and contributes no P&L, no cost, and no trade count.
           - Trade units: |new_position - old_position|. A short→long flip
             counts as 2 units (two executions), so trade cost is charged
             twice. Both totalPositionChanges (bars with any change) and
