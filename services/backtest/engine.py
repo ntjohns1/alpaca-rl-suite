@@ -202,7 +202,6 @@ class BacktestEngine:
             "maxDrawdown":            round(max_dd, 4),
             "winRate":                round(win_rate, 4),
             "profitFactor":           None if profit_factor is None else round(profit_factor, 3),
-            "totalTrades":            position_changes,
             "totalPositionChanges":   position_changes,
             "totalTradeUnits":        trade_units_total,
             "tradingDays":            trading_days,

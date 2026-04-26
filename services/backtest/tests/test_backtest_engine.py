@@ -52,7 +52,8 @@ class TestBacktestEngineBasics:
         for key in [
             "finalNav", "initialCapital", "totalReturn", "annualizedReturn",
             "marketReturn", "sharpeRatio", "sortinoRatio", "maxDrawdown",
-            "winRate", "profitFactor", "totalTrades", "tradingDays", "equityCurve",
+            "winRate", "profitFactor", "totalPositionChanges",
+            "totalTradeUnits", "tradingDays", "equityCurve",
         ]:
             assert key in result, f"Missing key: {key}"
 
@@ -73,7 +74,7 @@ class TestBacktestEngineBasics:
         def hold_policy(_state): return 1  # always HOLD
         engine = BacktestEngine()
         result = engine.run(_make_df(100), hold_policy)
-        assert result["totalTrades"] == 0
+        assert result["totalPositionChanges"] == 0
 
     def test_buy_and_hold_nav_changes(self):
         engine = BacktestEngine()
@@ -171,7 +172,7 @@ class TestBiasGuards:
         r1 = e1.run(df, e1.make_random_policy())
         r2 = e2.run(df, e2.make_random_policy())
         assert r1["finalNav"] == r2["finalNav"]
-        assert r1["totalTrades"] == r2["totalTrades"]
+        assert r1["totalPositionChanges"] == r2["totalPositionChanges"]
 
     def test_rng_isolation_between_instances(self):
         """Interleaving two engines must not affect their outputs."""
@@ -352,8 +353,6 @@ class TestTerminalBarAndTradeUnits:
         #   b2: pos 1→1  (0 units)
         assert result["totalPositionChanges"] == 2
         assert result["totalTradeUnits"] == 3
-        # Backwards-compatible alias still reports position changes.
-        assert result["totalTrades"] == result["totalPositionChanges"]
 
     def test_flat_strategy_sortino_is_zero_not_inf(self):
         """

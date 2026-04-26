@@ -107,7 +107,6 @@ export const BacktestMetricsSchema = z.object({
   winRate: z.number(),
   // null when there are no losing bars (gross_loss == 0)
   profitFactor: z.number().nullable(),
-  totalTrades: z.number().int(),
   totalPositionChanges: z.number().int(),
   totalTradeUnits: z.number().int(),
   tradingDays: z.number().int(),
