@@ -81,19 +81,39 @@ export const BacktestRequestSchema = z.object({
 });
 export type BacktestRequest = z.infer<typeof BacktestRequestSchema>;
 
+export const BacktestEquityCurvePointSchema = z.object({
+  time: z.string(),
+  nav: z.number(),
+  market_nav: z.number(),
+  position: z.number().int(),
+  strategy_ret: z.number(),
+  market_ret: z.number(),
+  cost: z.number(),
+});
+export type BacktestEquityCurvePoint = z.infer<typeof BacktestEquityCurvePointSchema>;
+
 export const BacktestMetricsSchema = z.object({
+  initialCapital: z.number(),
+  finalNav: z.number(),
   totalReturn: z.number(),
-  annualizedReturn: z.number(),
-  sharpeRatio: z.number(),
-  sortinoRatio: z.number().optional(),
+  // null when NAV ≤ 0 (e.g. short-position blowup); annualization is undefined
+  annualizedReturn: z.number().nullable(),
+  marketReturn: z.number(),
+  annualizedMarketReturn: z.number().nullable(),
+  // null when either leg's annualized return is undefined
+  alpha: z.number().nullable(),
+  // null when fewer than 2 return samples (sample-std is undefined)
+  sharpeRatio: z.number().nullable(),
+  // null when downside deviation is undefined with a positive mean (no losses)
+  sortinoRatio: z.number().nullable(),
   maxDrawdown: z.number(),
   winRate: z.number(),
-  profitFactor: z.number().optional(),
-  totalTrades: z.number().int(),
+  // null when there are no losing bars (gross_loss == 0)
+  profitFactor: z.number().nullable(),
+  totalPositionChanges: z.number().int(),
+  totalTradeUnits: z.number().int(),
   tradingDays: z.number().int(),
-  finalNav: z.number(),
-  marketReturn: z.number(),
-  alpha: z.number().optional(),
+  equityCurve: z.array(BacktestEquityCurvePointSchema).optional(),
 });
 export type BacktestMetrics = z.infer<typeof BacktestMetricsSchema>;
 
