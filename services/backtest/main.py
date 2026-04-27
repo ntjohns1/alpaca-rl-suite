@@ -125,11 +125,15 @@ def generate_charts(all_metrics: list[dict]) -> dict:
         ax1.plot(range(len(navs)), navs, label="Strategy", color="steelblue", linewidth=1.5)
         ax1.plot(range(len(market_nav)), market_nav, label="Buy & Hold", color="orange",
                  linewidth=1.2, linestyle="--")
+        # Both formatters guard explicitly against None rather than using
+        # `... or 0`, which would silently coerce a nullable contract widening
+        # (the way sharpeRatio was widened) into a misleading "0.0%" display.
         sharpe = m.get("sharpeRatio")
         sharpe_str = f"{sharpe:.2f}" if sharpe is not None else "n/a"
-        total_ret = m.get("totalReturn") or 0
+        total_ret = m.get("totalReturn")
+        ret_str = f"{total_ret * 100:.1f}%" if total_ret is not None else "n/a"
         ax1.set_title(f"{symbol} – Equity Curve  |  Sharpe: {sharpe_str}  "
-                      f"Return: {total_ret*100:.1f}%")
+                      f"Return: {ret_str}")
         ax1.set_ylabel("Portfolio Value ($)")
         ax1.legend()
         ax1.grid(True, alpha=0.3)

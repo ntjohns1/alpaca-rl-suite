@@ -569,11 +569,7 @@ class TestNavBlowup:
             "stoch":   [50.0] * n, "ultosc": [50.0] * n,
         })
         engine = BacktestEngine(trading_cost_bps=0, time_cost_bps=0)
-        def short_first_then_hold(state):
-            # decision bars are i=0..3; SHORT once at i=0, then HOLD.
-            return 0 if state[0] == 0.0 and state[1] == 0.0 else 1
-        # Simpler: always SHORT.
-        result = engine.run(df, lambda _: 0)
+        result = engine.run(df, lambda _: 0)  # always SHORT
         assert result["annualizedReturn"] is None
         assert result["alpha"] is None
         # The whole thing must round-trip through strict JSON.
