@@ -31,9 +31,13 @@ def mock_db(monkeypatch):
 
 @pytest.fixture
 def app_client():
-    from main import app
-    with TestClient(app, raise_server_exceptions=False) as client:
-        yield client
+    from main import app, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {"preferred_username": "test-user"}
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 # ─── DB helper tests ─────────────────────────────────────────────────────────
@@ -197,11 +201,21 @@ class TestApprovePolicyEndpoint:
     def test_approves_policy(self, app_client, mock_db):
         mock_conn, mock_cursor = mock_db
         mock_cursor.rowcount = 1
-        resp = app_client.post("/rl/policies/pol-1/approve?approved_by=alice")
+        # approved_by is intentionally NOT taken from the query string —
+        # backend derives it from the validated JWT (preferred_username).
+        resp = app_client.post("/rl/policies/pol-1/approve")
         assert resp.status_code == 200
         body = resp.json()
         assert body["approvalStatus"] == "approved"
-        assert body["approvedBy"] == "alice"
+        assert body["approvedBy"] == "test-user"
+
+    def test_approve_ignores_client_supplied_identity(self, app_client, mock_db):
+        """A forged ?approved_by=attacker query string must be ignored."""
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.rowcount = 1
+        resp = app_client.post("/rl/policies/pol-1/approve?approved_by=attacker")
+        assert resp.status_code == 200
+        assert resp.json()["approvedBy"] == "test-user"
 
     def test_returns_404_for_missing_policy(self, app_client, mock_db):
         mock_conn, mock_cursor = mock_db
