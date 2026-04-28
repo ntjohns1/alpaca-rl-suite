@@ -204,15 +204,15 @@ jobs:
   docker-compose-validate:
     name: Validate docker-compose
     runs-on: ubuntu-latest
+    env:
+      KEYCLOAK_URL: http://placeholder
+      KEYCLOAK_REALM: placeholder
+      KEYCLOAK_CLIENT_ID: placeholder
     steps:
       - uses: actions/checkout@v4
 
       - name: Create stub .env for compose validation
-        run: |
-          touch .env
-          echo "KEYCLOAK_URL=http://placeholder" >> .env
-          echo "KEYCLOAK_REALM=placeholder" >> .env
-          echo "KEYCLOAK_CLIENT_ID=placeholder" >> .env
+        run: touch .env
 
       - name: Validate docker-compose config
         run: docker compose -f infra/docker-compose.yml config --quiet
