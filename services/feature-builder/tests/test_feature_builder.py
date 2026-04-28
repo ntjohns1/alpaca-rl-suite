@@ -24,9 +24,13 @@ from feature_columns import ALL_FEATURE_COLS, SHARADAR_COLS, TECHNICAL_COLS
 
 @pytest.fixture
 def app_client():
-    from main import app
-    with TestClient(app, raise_server_exceptions=False) as client:
-        yield client
+    from main import app, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {"preferred_username": "test-user"}
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def _make_bars_df(n: int = 80, seed: int = 7) -> pd.DataFrame:

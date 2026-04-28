@@ -6,13 +6,14 @@ to the various alpaca-rl-suite microservices.
 import logging
 import os
 from contextlib import asynccontextmanager
-import requests
+
+import httpx
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from auth import get_current_user
+from auth import get_current_user, keycloak_auth
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -30,10 +31,11 @@ MARKET_SERVICE_URL      = os.getenv("MARKET_SERVICE_URL",   "http://market-inges
 FEATURE_SERVICE_URL     = os.getenv("FEATURE_SERVICE_URL",  "http://feature-builder:8002")
 GRAFANA_URL             = os.getenv("GRAFANA_URL", "http://grafana:3000")
 
-# Keycloak configuration
-KEYCLOAK_URL            = os.getenv("KEYCLOAK_URL", "https://auth.nelsonjohns.com")
-KEYCLOAK_REALM          = os.getenv("KEYCLOAK_REALM", "admin")
-KEYCLOAK_CLIENT_ID      = os.getenv("KEYCLOAK_CLIENT_ID", "alpaca-rl-web-ui")
+# CORS — explicit allowlist; empty by default (same-origin deployment).
+# Set CORS_ORIGINS to a comma-separated list for cross-origin dev (e.g. Vite at :5173).
+CORS_ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+
+PROXY_TIMEOUT_S = float(os.getenv("PROXY_TIMEOUT_S", "30"))
 
 SERVICE_MAP = {
     "kaggle":    KAGGLE_SERVICE_URL,
@@ -45,22 +47,35 @@ SERVICE_MAP = {
     "features":  FEATURE_SERVICE_URL,
 }
 
+# Headers we never forward upstream (hop-by-hop or set by httpx itself).
+_HOP_BY_HOP = {
+    "host", "connection", "keep-alive", "proxy-authenticate",
+    "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade",
+    "content-length",
+}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info(f"Web UI service started on port {WEB_UI_PORT}")
-    yield
+    app.state.http = httpx.AsyncClient(timeout=PROXY_TIMEOUT_S)
+    log.info("Web UI service started on port %d", WEB_UI_PORT)
+    log.info("Keycloak issuer: %s", keycloak_auth.issuer)
+    try:
+        yield
+    finally:
+        await app.state.http.aclose()
 
 
 app = FastAPI(title="Alpaca RL Web UI", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
 # ─────────────────────────────────────────
@@ -68,11 +83,11 @@ app.add_middleware(
 # ─────────────────────────────────────────
 @app.get("/api/auth/config")
 async def get_auth_config():
-    """Return Keycloak configuration for frontend."""
+    """Return Keycloak configuration for frontend bootstrap."""
     return {
-        "url": KEYCLOAK_URL,
-        "realm": KEYCLOAK_REALM,
-        "clientId": KEYCLOAK_CLIENT_ID,
+        "url": keycloak_auth.server_url,
+        "realm": keycloak_auth.realm,
+        "clientId": keycloak_auth.client_id,
     }
 
 
@@ -85,98 +100,76 @@ async def get_user_info(user: dict = Depends(get_current_user)):
 # ─────────────────────────────────────────
 # API Proxy — forwards /api/{service}/... to the correct backend
 # ─────────────────────────────────────────
-@app.api_route("/api/{service}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy_no_path(service: str, request: Request, user: dict = Depends(get_current_user)):
-    """Reverse-proxy API requests to the appropriate microservice (no path)."""
-    # Skip auth service - handled by dedicated endpoints above
+@app.api_route(
+    "/api/{service}/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+async def proxy(
+    service: str,
+    path: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+):
+    """Reverse-proxy authenticated API requests to the appropriate microservice."""
     if service == "auth":
         return JSONResponse({"error": "Not found"}, status_code=404)
-    
+
     target_base = SERVICE_MAP.get(service)
     if not target_base:
         return JSONResponse({"error": f"Unknown service: {service}"}, status_code=404)
 
-    url = f"{target_base}/{service}"
-    params = dict(request.query_params)
+    # Forward path verbatim under the service namespace (matches the project
+    # convention that backend routes are mounted under their own service name).
+    upstream_path = f"/{service}" if not path else f"/{service}/{path}"
+    url = f"{target_base}{upstream_path}"
+
+    headers = {
+        k: v for k, v in request.headers.items()
+        if k.lower() not in _HOP_BY_HOP
+    }
 
     try:
         body = await request.body()
-        headers = {"Content-Type": request.headers.get("content-type", "application/json")}
-        
-        # Forward authentication token to backend services
-        auth_header = request.headers.get("authorization")
-        if auth_header:
-            headers["Authorization"] = auth_header
-
-        resp = requests.request(
+        upstream_req = request.app.state.http.build_request(
             method=request.method,
             url=url,
-            params=params,
-            data=body if body else None,
+            params=dict(request.query_params),
+            content=body if body else None,
             headers=headers,
-            timeout=30,
         )
-
-        try:
-            content = resp.json()
-        except Exception:
-            content = resp.text
-
-        return JSONResponse(content=content, status_code=resp.status_code)
-
-    except requests.exceptions.ConnectionError:
-        return JSONResponse({"error": f"Service '{service}' unavailable at {target_base}"}, status_code=502)
-    except requests.exceptions.Timeout:
-        return JSONResponse({"error": f"Service '{service}' timeout"}, status_code=504)
-
-
-@app.api_route("/api/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def proxy(service: str, path: str, request: Request, user: dict = Depends(get_current_user)):
-    """Reverse-proxy API requests to the appropriate microservice."""
-    target_base = SERVICE_MAP.get(service)
-    if not target_base:
-        return JSONResponse({"error": f"Unknown service: {service}"}, status_code=404)
-
-    # Construct URL, handling empty paths correctly
-    if path:
-        url = f"{target_base}/{service}/{path}"
-    else:
-        url = f"{target_base}/{service}"
-    params = dict(request.query_params)
-
-    try:
-        body = await request.body()
-        headers = {"Content-Type": request.headers.get("content-type", "application/json")}
-        
-        # Forward authentication token to backend services
-        auth_header = request.headers.get("authorization")
-        if auth_header:
-            headers["Authorization"] = auth_header
-
-        resp = requests.request(
-            method=request.method,
-            url=url,
-            params=params,
-            data=body if body else None,
-            headers=headers,
-            timeout=30,
+        upstream_resp = await request.app.state.http.send(upstream_req, stream=True)
+    except httpx.ConnectError:
+        return JSONResponse(
+            {"error": f"Service '{service}' unavailable at {target_base}"},
+            status_code=502,
         )
-
-        try:
-            content = resp.json()
-        except Exception:
-            content = resp.text
-
-        return JSONResponse(content=content, status_code=resp.status_code)
-
-    except requests.exceptions.ConnectionError:
-        return JSONResponse({"error": f"Service '{service}' unavailable at {target_base}"}, status_code=502)
-    except requests.exceptions.Timeout:
+    except httpx.TimeoutException:
         return JSONResponse({"error": f"Service '{service}' timeout"}, status_code=504)
+    except Exception:
+        log.exception("Proxy error for %s %s", request.method, url)
+        return JSONResponse({"error": "Upstream proxy error"}, status_code=500)
+
+    response_headers = {
+        k: v for k, v in upstream_resp.headers.items()
+        if k.lower() not in _HOP_BY_HOP
+    }
+
+    async def stream():
+        try:
+            async for chunk in upstream_resp.aiter_raw():
+                yield chunk
+        finally:
+            await upstream_resp.aclose()
+
+    return StreamingResponse(
+        stream(),
+        status_code=upstream_resp.status_code,
+        headers=response_headers,
+    )
 
 
 @app.get("/api/config")
-def get_config():
+async def get_config():
     """Return UI configuration (Grafana URL, etc.)."""
     return {
         "grafanaUrl": os.getenv("GRAFANA_EXTERNAL_URL", "http://localhost:3100"),
@@ -184,31 +177,8 @@ def get_config():
 
 
 @app.get("/api/health")
-def health():
+async def health():
     return {"status": "ok", "service": "web-ui"}
-
-
-@app.get("/api/auth/test")
-async def test_keycloak():
-    """Test Keycloak connectivity from backend."""
-    try:
-        url = f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}/.well-known/openid-configuration"
-        resp = requests.get(url, timeout=5)
-        return {
-            "status": "ok" if resp.status_code == 200 else "error",
-            "keycloak_url": KEYCLOAK_URL,
-            "realm": KEYCLOAK_REALM,
-            "client_id": KEYCLOAK_CLIENT_ID,
-            "response_code": resp.status_code,
-            "accessible": resp.status_code == 200
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "keycloak_url": KEYCLOAK_URL,
-            "realm": KEYCLOAK_REALM,
-        }
 
 
 # ─────────────────────────────────────────

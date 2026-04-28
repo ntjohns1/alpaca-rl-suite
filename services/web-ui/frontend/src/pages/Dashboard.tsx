@@ -7,8 +7,8 @@ import {
 } from 'lucide-react'
 
 export function Dashboard() {
-  const { data: overview, isLoading } = useQuery({ queryKey: ['overview'], queryFn: fetchOverview })
-  const { data: activity } = useQuery({ queryKey: ['activity'], queryFn: () => fetchActivity(10) })
+  const { data: overview, isLoading } = useQuery({ queryKey: ['overview'], queryFn: fetchOverview, refetchInterval: 30_000 })
+  const { data: activity } = useQuery({ queryKey: ['activity'], queryFn: () => fetchActivity(10), refetchInterval: 30_000 })
 
   if (isLoading) return <div className="flex items-center justify-center py-20 text-muted-foreground">Loading...</div>
 

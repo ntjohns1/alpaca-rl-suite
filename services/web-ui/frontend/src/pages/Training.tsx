@@ -10,7 +10,7 @@ export function Training() {
   const queryClient = useQueryClient()
   const [showForm, setShowForm] = useState(false)
 
-  const { data: jobs = [], isLoading } = useQuery({ queryKey: ['jobs'], queryFn: () => fetchJobs() })
+  const { data: jobs = [], isLoading } = useQuery({ queryKey: ['jobs'], queryFn: () => fetchJobs(), refetchInterval: 30_000 })
   const { data: quota } = useQuery({ queryKey: ['quota'], queryFn: fetchQuota })
 
   const trainMutation = useMutation({

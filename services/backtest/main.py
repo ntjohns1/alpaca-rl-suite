@@ -4,6 +4,7 @@ import json
 import hashlib
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from observability import setup_observability
 from typing import Optional
@@ -12,9 +13,15 @@ import boto3
 import numpy as np
 import pandas as pd
 import psycopg2
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
+
+_keycloak_auth = keycloak_auth_from_env()
+get_current_user, _, _ = make_auth_dependencies(_keycloak_auth)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -361,7 +368,11 @@ class BacktestRequest(BaseModel):
 
 
 @app.post("/backtest/run")
-def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
+def run_backtest(
+    req: BacktestRequest,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
     config = req.model_dump()
     report_id = create_backtest_record(config)
     background_tasks.add_task(run_backtest_task, report_id, config)
@@ -369,7 +380,7 @@ def run_backtest(req: BacktestRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/backtest/{report_id}")
-def get_backtest(report_id: str):
+def get_backtest(report_id: str, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         df = pd.read_sql(
             "SELECT * FROM backtest_report WHERE id=%s", conn, params=(report_id,)
@@ -383,7 +394,7 @@ def get_backtest(report_id: str):
 
 
 @app.get("/backtest")
-def list_backtests(limit: int = 50):
+def list_backtests(limit: int = 50, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         df = pd.read_sql(
             "SELECT id,name,status,config_hash,created_at FROM backtest_report ORDER BY created_at DESC LIMIT %s",
@@ -393,7 +404,7 @@ def list_backtests(limit: int = 50):
 
 
 @app.get("/backtest/{report_id}/charts")
-def get_backtest_charts(report_id: str):
+def get_backtest_charts(report_id: str, _user: dict = Depends(get_current_user)):
     """Return chart metadata (S3 paths) for a completed backtest."""
     with get_conn() as conn:
         df = pd.read_sql(
@@ -415,7 +426,7 @@ def get_backtest_charts(report_id: str):
 
 
 @app.get("/backtest/{report_id}/images/{symbol}")
-def get_backtest_image(report_id: str, symbol: str):
+def get_backtest_image(report_id: str, symbol: str, _user: dict = Depends(get_current_user)):
     """Proxy-serve a chart PNG from MinIO."""
     with get_conn() as conn:
         df = pd.read_sql(

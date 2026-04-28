@@ -2,16 +2,26 @@
 Dashboard Service
 Aggregates system health and activity across all alpaca-rl-suite services.
 Provides a unified view for the web UI.
+
+Trust model: backend services in this suite are not exposed to the public
+internet — only the web-ui proxy can reach them via the internal docker /
+k8s network. JWT auth here is the second layer (defense in depth) so a
+compromised neighbor can't pivot. /dashboard/health remains unauthenticated
+for liveness probes.
 """
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 
 import pandas as pd
 import psycopg2
 import requests
-from fastapi import FastAPI, Query
+from fastapi import Depends, FastAPI, Query
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -171,9 +181,13 @@ def get_system_stats() -> dict:
 # ─────────────────────────────────────────
 # FastAPI App
 # ─────────────────────────────────────────
+_keycloak_auth = keycloak_auth_from_env()
+get_current_user, _, _ = make_auth_dependencies(_keycloak_auth)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("Dashboard service started")
+    log.info("Dashboard service started; issuer=%s", _keycloak_auth.issuer)
     yield
 
 
@@ -181,7 +195,7 @@ app = FastAPI(title="Dashboard Service", lifespan=lifespan)
 
 
 @app.get("/dashboard/overview")
-def get_overview():
+def get_overview(_user: dict = Depends(get_current_user)):
     """System overview: health of all services + aggregated stats."""
     service_statuses = [
         check_service_health(name, url) for name, url in SERVICE_REGISTRY.items()
@@ -199,7 +213,7 @@ def get_overview():
 
 
 @app.get("/dashboard/services")
-def get_services():
+def get_services(_user: dict = Depends(get_current_user)):
     """Health status for each registered service."""
     return {
         "services":  [check_service_health(name, url) for name, url in SERVICE_REGISTRY.items()],
@@ -208,7 +222,10 @@ def get_services():
 
 
 @app.get("/dashboard/activity")
-def get_activity(limit: int = Query(default=20, ge=1, le=100)):
+def get_activity(
+    limit: int = Query(default=20, ge=1, le=100),
+    _user: dict = Depends(get_current_user),
+):
     """Recent activity feed (training jobs + backtests)."""
     return {
         "events":      get_recent_activity(limit),
@@ -218,6 +235,7 @@ def get_activity(limit: int = Query(default=20, ge=1, le=100)):
 
 @app.get("/dashboard/health")
 def health():
+    """Unauthenticated liveness probe — used by docker/k8s and the web-ui proxy."""
     return {"status": "ok", "service": "dashboard"}
 
 

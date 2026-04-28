@@ -13,12 +13,16 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import boto3
 import psycopg2
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
+
+_keycloak_auth = keycloak_auth_from_env()
+get_current_user, _, _ = make_auth_dependencies(_keycloak_auth)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -179,7 +183,7 @@ class BuildDatasetRequest(BaseModel):
 
 
 @app.post("/datasets/build")
-def build_dataset(req: BuildDatasetRequest):
+def build_dataset(req: BuildDatasetRequest, _user: dict = Depends(get_current_user)):
     try:
         log.info(f"Building dataset '{req.name}' for {req.symbols}")
         df = fetch_features(req.symbols, req.start_date, req.end_date)
@@ -251,7 +255,7 @@ def build_dataset(req: BuildDatasetRequest):
 
 
 @app.get("/datasets")
-def list_datasets():
+def list_datasets(_user: dict = Depends(get_current_user)):
     with psycopg2.connect(DATABASE_URL) as conn:
         df = pd.read_sql("SELECT * FROM dataset_manifest ORDER BY created_at DESC", conn)
     return df.to_dict("records")
@@ -263,6 +267,7 @@ def export_dataset(
     format: str = Query(default="csv", pattern="^(csv|parquet)$"),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    _user: dict = Depends(get_current_user),
 ):
     """
     Export feature data for given symbols to CSV or Parquet.
@@ -308,6 +313,7 @@ def preview_dataset(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     rows: int = Query(default=20, ge=1, le=200),
+    _user: dict = Depends(get_current_user),
 ):
     """Return a preview of feature data (up to `rows` rows per symbol)."""
     try:
@@ -334,7 +340,7 @@ def preview_dataset(
 
 
 @app.get("/datasets/{dataset_id}")
-def get_dataset(dataset_id: str):
+def get_dataset(dataset_id: str, _user: dict = Depends(get_current_user)):
     with psycopg2.connect(DATABASE_URL) as conn:
         df = pd.read_sql(
             "SELECT * FROM dataset_manifest WHERE id = %s", conn, params=(dataset_id,)
@@ -345,7 +351,7 @@ def get_dataset(dataset_id: str):
 
 
 @app.delete("/datasets/{dataset_id}", status_code=204)
-def delete_dataset(dataset_id: str):
+def delete_dataset(dataset_id: str, _user: dict = Depends(get_current_user)):
     """Delete a dataset manifest record (does not remove S3 files)."""
     with psycopg2.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:

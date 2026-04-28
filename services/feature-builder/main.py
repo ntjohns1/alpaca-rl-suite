@@ -7,7 +7,7 @@ from observability import setup_observability
 
 import pandas as pd
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import execute_values
@@ -15,6 +15,10 @@ import ta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 from feature_columns import TECHNICAL_COLS, ALL_FEATURE_COLS
+from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
+
+_keycloak_auth = keycloak_auth_from_env()
+get_current_user, _, _ = make_auth_dependencies(_keycloak_auth)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -287,7 +291,7 @@ class ComputeFeaturesRequest(BaseModel):
 
 
 @app.post("/features/build")
-def build_features(req: BuildFeaturesRequest):
+def build_features(req: BuildFeaturesRequest, _user: dict = Depends(get_current_user)):
     results = {}
     for symbol in req.symbols:
         try:
@@ -311,7 +315,7 @@ def build_features(req: BuildFeaturesRequest):
 
 
 @app.post("/features/compute")
-def compute_features_for_range(req: ComputeFeaturesRequest):
+def compute_features_for_range(req: ComputeFeaturesRequest, _user: dict = Depends(get_current_user)):
     """On-demand feature computation for a specific date range."""
     results = {}
     for symbol in req.symbols:
@@ -351,6 +355,7 @@ def check_feature_availability(
     symbols: str,
     start_date: str,
     end_date: str,
+    _user: dict = Depends(get_current_user),
 ):
     """Check how many feature rows exist for the given symbols and date range."""
     symbol_list = [s.strip() for s in symbols.split(",")]
@@ -383,7 +388,7 @@ def check_feature_availability(
 
 
 @app.get("/features/latest/{symbol}")
-def get_latest_features(symbol: str):
+def get_latest_features(symbol: str, _user: dict = Depends(get_current_user)):
     try:
         with get_conn() as conn:
             df = fetch_bars(symbol, 60, conn=conn)

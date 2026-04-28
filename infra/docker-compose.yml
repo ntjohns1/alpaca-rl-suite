@@ -273,6 +273,10 @@ services:
     env_file: ../.env
     ports:
       - '${FEATURE_BUILDER_PORT:-8002}:8002'
+    environment:
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       postgres:
         condition: service_healthy
@@ -292,6 +296,9 @@ services:
       - S3_BUCKET=alpaca-rl-artifacts
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       postgres:
         condition: service_healthy
@@ -301,8 +308,8 @@ services:
 
   backtest:
     build:
-      context: ../services/backtest
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/backtest/Dockerfile
     container_name: alpaca_rl_backtest
     env_file: ../.env
     ports:
@@ -313,6 +320,9 @@ services:
       - S3_BUCKET=alpaca-rl-artifacts
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       postgres:
         condition: service_healthy
@@ -334,6 +344,9 @@ services:
       - S3_BUCKET=alpaca-rl-artifacts
       - S3_ACCESS_KEY=minioadmin
       - S3_SECRET_KEY=minioadmin
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       postgres:
         condition: service_healthy
@@ -383,8 +396,8 @@ services:
 
   kaggle-orchestrator:
     build:
-      context: ../services/kaggle-orchestrator
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/kaggle-orchestrator/Dockerfile
     container_name: alpaca_rl_kaggle_orchestrator
     env_file: ../.env
     ports:
@@ -393,6 +406,9 @@ services:
       - DATABASE_URL=postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl
       - S3_ENDPOINT=http://minio:9000
       - S3_BUCKET=alpaca-rl-artifacts
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       postgres:
         condition: service_healthy
@@ -402,8 +418,8 @@ services:
 
   dashboard:
     build:
-      context: ../services/dashboard
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/dashboard/Dockerfile
     container_name: alpaca_rl_dashboard
     env_file: ../.env
     ports:
@@ -414,6 +430,9 @@ services:
       - BACKTEST_SERVICE_URL=http://backtest:8001
       - RL_TRAIN_SERVICE_URL=http://rl-train:8004
       - DATASET_SERVICE_URL=http://dataset-builder:8003
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       postgres:
         condition: service_healthy
@@ -421,8 +440,8 @@ services:
 
   web-ui:
     build:
-      context: ../services/web-ui
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: services/web-ui/Dockerfile
     container_name: alpaca_rl_web_ui
     env_file: ../.env
     ports:
@@ -435,8 +454,9 @@ services:
       - DASHBOARD_SERVICE_URL=http://dashboard:8020
       - GRAFANA_URL=http://grafana:3000
       - GRAFANA_EXTERNAL_URL=http://localhost:3100
-      - KEYCLOAK_URL=${KEYCLOAK_URL:-https://auth.nelsonjohns.com}
-      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-admin}
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+      - KEYCLOAK_URL=${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
       - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-alpaca-rl-web-ui}
     depends_on:
       - dashboard

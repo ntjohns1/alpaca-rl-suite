@@ -1,10 +1,21 @@
 """
 Conftest for feature-builder unit tests.
-Stubs out observability dependencies (opentelemetry, prometheus) so tests
-can import main.py without those heavy packages installed locally.
+Stubs out observability dependencies (opentelemetry, prometheus) and Keycloak
+auth so tests can import main.py without those heavy packages installed locally.
 """
+import os
 import sys
 import types
+from unittest.mock import MagicMock
+
+os.environ.setdefault("KEYCLOAK_URL", "http://localhost:8080")
+os.environ.setdefault("KEYCLOAK_REALM", "test")
+os.environ.setdefault("KEYCLOAK_CLIENT_ID", "test-client")
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
+
+fake_keycloak = MagicMock()
+fake_keycloak.KeycloakOpenID = MagicMock(return_value=MagicMock(certs=lambda: {"keys": []}))
+sys.modules.setdefault("keycloak", fake_keycloak)
 
 
 def _stub_observability():

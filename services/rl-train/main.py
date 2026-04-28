@@ -5,6 +5,7 @@ Keeps the same TradingEnvironment gymnasium interface and S3/DB plumbing.
 """
 import io
 import os
+import sys
 import json
 import hashlib
 import logging
@@ -17,7 +18,7 @@ import pandas as pd
 import psycopg2
 import boto3
 import torch
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from stable_baselines3 import DQN
@@ -25,6 +26,16 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
 
 from trading_env import TradingEnvironment
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
+
+_keycloak_auth = keycloak_auth_from_env()
+get_current_user, _, _ = make_auth_dependencies(_keycloak_auth)
+
+
+def _username(user: dict) -> str:
+    return user.get("preferred_username") or user.get("email") or user.get("sub") or "unknown"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -272,7 +283,11 @@ class TrainingRequest(BaseModel):
 
 
 @app.post("/rl/train")
-def start_training(req: TrainingRequest, background_tasks: BackgroundTasks):
+def start_training(
+    req: TrainingRequest,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
     config = req.model_dump()
     run_id = create_run(req.name, config)
     background_tasks.add_task(train, run_id, config)
@@ -280,7 +295,7 @@ def start_training(req: TrainingRequest, background_tasks: BackgroundTasks):
 
 
 @app.get("/rl/runs")
-def list_runs(limit: int = 50):
+def list_runs(limit: int = 50, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         df = pd.read_sql(
             "SELECT id,name,status,config_hash,started_at,completed_at FROM training_run ORDER BY started_at DESC LIMIT %s",
@@ -290,7 +305,7 @@ def list_runs(limit: int = 50):
 
 
 @app.get("/rl/runs/{run_id}")
-def get_run(run_id: str):
+def get_run(run_id: str, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         df = pd.read_sql(
             "SELECT * FROM training_run WHERE id=%s", conn, params=(run_id,)
@@ -304,22 +319,29 @@ def get_run(run_id: str):
 
 
 @app.get("/rl/policies")
-def list_policies(promoted_only: bool = False, approval_status: Optional[str] = None):
+def list_policies(
+    promoted_only: bool = False,
+    approval_status: Optional[str] = None,
+    _user: dict = Depends(get_current_user),
+):
     with get_conn() as conn:
         clauses = []
+        params: list = []
         if promoted_only:
             clauses.append("promoted=TRUE")
         if approval_status:
-            clauses.append(f"approval_status='{approval_status}'")
+            clauses.append("approval_status=%s")
+            params.append(approval_status)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         df = pd.read_sql(
-            f"SELECT * FROM policy_bundle {where} ORDER BY created_at DESC", conn
+            f"SELECT * FROM policy_bundle {where} ORDER BY created_at DESC", conn,
+            params=params or None,
         )
     return df.to_dict("records")
 
 
 @app.get("/rl/policies/{policy_id}/download")
-def download_policy(policy_id: str):
+def download_policy(policy_id: str, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         df = pd.read_sql(
             "SELECT name, s3_path FROM policy_bundle WHERE id=%s", conn, params=(policy_id,)
@@ -342,7 +364,7 @@ def download_policy(policy_id: str):
 
 
 @app.get("/rl/policies/{policy_id}")
-def get_policy(policy_id: str):
+def get_policy(policy_id: str, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         df = pd.read_sql(
             "SELECT * FROM policy_bundle WHERE id=%s", conn, params=(policy_id,)
@@ -357,21 +379,28 @@ def get_policy(policy_id: str):
 
 
 @app.post("/rl/policies/{policy_id}/approve")
-def approve_policy(policy_id: str, approved_by: Optional[str] = None):
+def approve_policy(policy_id: str, user: dict = Depends(get_current_user)):
+    actor = _username(user)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE policy_bundle SET approval_status='approved', approved_by=%s, approved_at=NOW() WHERE id=%s",
-                (approved_by, policy_id),
+                (actor, policy_id),
             )
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Policy not found")
         conn.commit()
-    return {"policyId": policy_id, "approvalStatus": "approved", "approvedBy": approved_by}
+    log.info("[%s] Policy approved by %s", policy_id, actor)
+    return {"policyId": policy_id, "approvalStatus": "approved", "approvedBy": actor}
 
 
 @app.post("/rl/policies/{policy_id}/reject")
-def reject_policy(policy_id: str, reason: Optional[str] = None):
+def reject_policy(
+    policy_id: str,
+    reason: Optional[str] = None,
+    user: dict = Depends(get_current_user),
+):
+    actor = _username(user)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -381,11 +410,13 @@ def reject_policy(policy_id: str, reason: Optional[str] = None):
             if cur.rowcount == 0:
                 raise HTTPException(status_code=404, detail="Policy not found")
         conn.commit()
-    return {"policyId": policy_id, "approvalStatus": "rejected", "reason": reason}
+    log.info("[%s] Policy rejected by %s: %s", policy_id, actor, reason)
+    return {"policyId": policy_id, "approvalStatus": "rejected", "rejectedBy": actor, "reason": reason}
 
 
 @app.post("/rl/policies/{policy_id}/promote")
-def promote_policy(policy_id: str, promoted_by: Optional[str] = None):
+def promote_policy(policy_id: str, user: dict = Depends(get_current_user)):
+    actor = _username(user)
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -398,15 +429,16 @@ def promote_policy(policy_id: str, promoted_by: Optional[str] = None):
             if row[0] != "approved":
                 raise HTTPException(status_code=400, detail=f"Policy is not approved (status={row[0]})")
             cur.execute(
-                "UPDATE policy_bundle SET promoted=TRUE, promoted_at=NOW() WHERE id=%s",
-                (policy_id,),
+                "UPDATE policy_bundle SET promoted=TRUE, promoted_at=NOW(), promoted_by=%s WHERE id=%s",
+                (actor, policy_id),
             )
         conn.commit()
-    return {"policyId": policy_id, "promoted": True}
+    log.info("[%s] Policy promoted by %s", policy_id, actor)
+    return {"policyId": policy_id, "promoted": True, "promotedBy": actor}
 
 
 @app.delete("/rl/policies/{policy_id}", status_code=204)
-def delete_policy(policy_id: str):
+def delete_policy(policy_id: str, _user: dict = Depends(get_current_user)):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM policy_bundle WHERE id=%s", (policy_id,))
@@ -417,6 +449,7 @@ def delete_policy(policy_id: str):
 
 @app.get("/rl/train/health")
 def health():
+    """Unauthenticated liveness probe."""
     return {"status": "ok", "service": "rl-train", "cuda": torch.cuda.is_available()}
 
 
