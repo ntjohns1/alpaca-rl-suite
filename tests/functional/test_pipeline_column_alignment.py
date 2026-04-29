@@ -150,6 +150,7 @@ def _install_stubs():
         fastapi.FastAPI = FastAPI
         fastapi.BackgroundTasks = BackgroundTasks
         fastapi.HTTPException = HTTPException
+        fastapi.Depends = lambda dependency=None, **kwargs: dependency
         fastapi.Query = lambda default=None, **kwargs: default
         fastapi.Request = Request
         sys.modules["fastapi"] = fastapi
