@@ -52,7 +52,7 @@ scrape_configs:
       - targets: ['strategy-runner:3007']
     metrics_path: '/metrics'
 
-  # ─── Python ML services (server_5: role=compute) ──────────────────────
+  # ─── Python ML services (server_7: role=compute) ──────────────────────
   - job_name: 'backtest'
     static_configs:
       - targets: ['backtest:8001']

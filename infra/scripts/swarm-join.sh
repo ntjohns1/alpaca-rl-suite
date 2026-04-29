@@ -5,7 +5,7 @@
 #   ./swarm-join.sh <join-token> <role>
 #
 # Example:
-#   ./swarm-join.sh SWMTKN-1-xxx compute    # server_5
+#   ./swarm-join.sh SWMTKN-1-xxx compute    # server_7
 #   ./swarm-join.sh SWMTKN-1-xxx trading    # server_6
 set -euo pipefail
 
@@ -13,7 +13,7 @@ MANAGER_IP="192.168.10.104"
 
 if [ $# -lt 2 ]; then
   echo "Usage: $0 <swarm-join-token> <role>"
-  echo "  role: compute (server_5) or trading (server_6)"
+  echo "  role: compute (server_7) or trading (server_6)"
   exit 1
 fi
 
