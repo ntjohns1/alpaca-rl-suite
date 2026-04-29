@@ -14,6 +14,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
@@ -22,9 +23,19 @@ import boto3
 import pandas as pd
 import psycopg2
 import requests
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
+from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
+
+_keycloak_auth = keycloak_auth_from_env()
+get_current_user, _, _ = make_auth_dependencies(_keycloak_auth)
+
+
+def _username(user: dict) -> str:
+    return user.get("preferred_username") or user.get("email") or user.get("sub") or "unknown"
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -471,20 +482,19 @@ class KaggleTrainingRequest(BaseModel):
     architecture: list[int] = Field(default=[256, 256])
 
 
-class ApprovalRequest(BaseModel):
-    approved_by: Optional[str] = "admin"
-
-
 class RejectionRequest(BaseModel):
     reason: Optional[str] = None
-    rejected_by: Optional[str] = "admin"
 
 
 # ─────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────
 @app.post("/kaggle/train", status_code=201)
-def start_kaggle_training(req: KaggleTrainingRequest, background_tasks: BackgroundTasks):
+def start_kaggle_training(
+    req: KaggleTrainingRequest,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
     """Initiate a Kaggle training job (full automated workflow)."""
     config = req.model_dump()
     job_id = create_kaggle_job(req.name, config)
@@ -502,6 +512,7 @@ def list_kaggle_jobs(
     status: Optional[str] = None,
     approval_status: Optional[str] = None,
     limit: int = 50,
+    _user: dict = Depends(get_current_user),
 ):
     """List Kaggle training jobs with optional filters."""
     conditions = []
@@ -527,13 +538,17 @@ def list_kaggle_jobs(
 
 
 @app.get("/kaggle/jobs/{job_id}")
-def get_kaggle_job(job_id: str):
+def get_kaggle_job(job_id: str, _user: dict = Depends(get_current_user)):
     """Get full Kaggle job details."""
     return get_job_row(job_id)
 
 
 @app.get("/kaggle/jobs/{job_id}/stream")
-async def stream_job_status(job_id: str, request: Request):
+async def stream_job_status(
+    job_id: str,
+    request: Request,
+    _user: dict = Depends(get_current_user),
+):
     """
     Server-Sent Events stream for real-time job status updates.
     The client receives status changes as 'data: {json}' events.
@@ -575,7 +590,7 @@ async def stream_job_status(job_id: str, request: Request):
 
 
 @app.post("/kaggle/jobs/{job_id}/cancel")
-def cancel_job(job_id: str):
+def cancel_job(job_id: str, _user: dict = Depends(get_current_user)):
     """Cancel a running or pending Kaggle job."""
     row = get_job_row(job_id)
     if row["status"] in ("completed", "failed", "cancelled"):
@@ -585,18 +600,25 @@ def cancel_job(job_id: str):
 
 
 @app.post("/kaggle/jobs/{job_id}/complete")
-def complete_job(job_id: str, kernel_slug: str, background_tasks: BackgroundTasks):
-    """Webhook: trigger model download from completed Kaggle kernel."""
+def complete_job(
+    job_id: str,
+    kernel_slug: str,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
+    """Trigger model download from completed Kaggle kernel."""
     background_tasks.add_task(complete_kaggle_training, job_id, kernel_slug)
     return {"jobId": job_id, "status": "downloading_model"}
 
 
 @app.post("/kaggle/jobs/{job_id}/approve-promotion")
-def approve_job_promotion(job_id: str, req: ApprovalRequest):
+def approve_job_promotion(job_id: str, user: dict = Depends(get_current_user)):
     """
     Approve a completed job for policy promotion.
     The job must be in 'pending_approval' status.
+    Identity is taken from the validated JWT — clients cannot forge it.
     """
+    actor = _username(user)
     row = get_job_row(job_id)
     if row["status"] != "pending_approval":
         raise HTTPException(
@@ -610,9 +632,8 @@ def approve_job_promotion(job_id: str, req: ApprovalRequest):
                    SET approval_status='approved', approved_by=%s,
                        approved_at=NOW(), updated_at=NOW()
                    WHERE id=%s""",
-                (req.approved_by, job_id),
+                (actor, job_id),
             )
-            # Also promote the associated policy_bundle
             policy_id = (row.get("metadata") or {}).get("policy_id")
             if policy_id:
                 cur.execute(
@@ -620,23 +641,29 @@ def approve_job_promotion(job_id: str, req: ApprovalRequest):
                        SET promoted=TRUE, promoted_at=NOW(), promoted_by=%s,
                            approval_status='approved', approved_by=%s, approved_at=NOW()
                        WHERE id=%s""",
-                    (req.approved_by, req.approved_by, policy_id),
+                    (actor, actor, policy_id),
                 )
         conn.commit()
-    log.info(f"[{job_id}] Approved for promotion by {req.approved_by}")
+    log.info("[%s] Approved for promotion by %s", job_id, actor)
     return {
         "jobId":          job_id,
         "approvalStatus": "approved",
-        "approvedBy":     req.approved_by,
+        "approvedBy":     actor,
         "policyId":       (row.get("metadata") or {}).get("policy_id"),
     }
 
 
 @app.post("/kaggle/jobs/{job_id}/reject-promotion")
-def reject_job_promotion(job_id: str, req: RejectionRequest):
+def reject_job_promotion(
+    job_id: str,
+    req: RejectionRequest,
+    user: dict = Depends(get_current_user),
+):
     """
     Reject a job from promotion. The model is archived but not deleted.
+    Identity is taken from the validated JWT.
     """
+    actor = _username(user)
     row = get_job_row(job_id)
     if row["status"] not in ("pending_approval", "completed"):
         raise HTTPException(
@@ -661,12 +688,17 @@ def reject_job_promotion(job_id: str, req: RejectionRequest):
                     (req.reason, policy_id),
                 )
         conn.commit()
-    log.info(f"[{job_id}] Rejected: {req.reason}")
-    return {"jobId": job_id, "approvalStatus": "rejected", "reason": req.reason}
+    log.info("[%s] Rejected by %s: %s", job_id, actor, req.reason)
+    return {
+        "jobId":          job_id,
+        "approvalStatus": "rejected",
+        "rejectedBy":     actor,
+        "reason":         req.reason,
+    }
 
 
 @app.get("/kaggle/quota")
-def get_kaggle_quota():
+def get_kaggle_quota(_user: dict = Depends(get_current_user)):
     """Retrieve GPU quota information from Kaggle API."""
     try:
         data = kaggle_request("GET", "/users/me")

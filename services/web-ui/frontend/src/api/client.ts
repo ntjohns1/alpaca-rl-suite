@@ -26,42 +26,51 @@ export const fetchActivity   = (limit = 20) => request<ActivityFeed>(`/dashboard
 
 // ── Training / Kaggle ──────────────────────────────────────
 export const startTraining   = (payload: TrainPayload) => request<TrainResponse>('/kaggle/train', { method: 'POST', body: JSON.stringify(payload) })
-export const fetchJobs       = (status?: string) => request<KaggleJob[]>(`/kaggle/jobs${status ? `?status=${status}` : ''}`)
-export const fetchJob        = (id: string) => request<KaggleJob>(`/kaggle/jobs/${id}`)
-export const cancelJob       = (id: string) => request<KaggleJob>(`/kaggle/jobs/${id}/cancel`, { method: 'POST' })
-export const approveJob      = (id: string) => request<ApprovalResponse>(`/kaggle/jobs/${id}/approve-promotion`, { method: 'POST', body: JSON.stringify({ approved_by: 'admin' }) })
-export const rejectJob       = (id: string, reason?: string) => request<ApprovalResponse>(`/kaggle/jobs/${id}/reject-promotion`, { method: 'POST', body: JSON.stringify({ reason }) })
+export const fetchJobs       = (status?: string) => request<KaggleJob[]>(`/kaggle/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`)
+export const fetchJob        = (id: string) => request<KaggleJob>(`/kaggle/jobs/${encodeURIComponent(id)}`)
+export const cancelJob       = (id: string) => request<KaggleJob>(`/kaggle/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+// approved_by / promoted_by intentionally omitted: backend will derive identity
+// from the validated JWT once libs/auth lands in kaggle-orchestrator + rl-train
+// (deferred plan Step 5). Until then, current backends still expect a body but
+// it is no longer authoritative.
+export const approveJob      = (id: string) => request<ApprovalResponse>(`/kaggle/jobs/${encodeURIComponent(id)}/approve-promotion`, { method: 'POST', body: JSON.stringify({}) })
+export const rejectJob       = (id: string, reason?: string) => request<ApprovalResponse>(`/kaggle/jobs/${encodeURIComponent(id)}/reject-promotion`, { method: 'POST', body: JSON.stringify({ reason }) })
 export const fetchQuota      = () => request<KaggleQuota>('/kaggle/quota')
 
 // ── Backtest ───────────────────────────────────────────────
 export const runBacktest     = (payload: BacktestPayload) => request<BacktestResponse>('/backtest/run', { method: 'POST', body: JSON.stringify(payload) })
 export const fetchBacktests  = (limit = 50) => request<BacktestRow[]>(`/backtest?limit=${limit}`)
-export const fetchBacktest   = (id: string) => request<BacktestResult>(`/backtest/${id}`)
-export const fetchCharts     = (id: string) => request<BacktestCharts>(`/backtest/${id}/charts`)
+export const fetchBacktest   = (id: string) => request<BacktestResult>(`/backtest/${encodeURIComponent(id)}`)
+export const fetchCharts     = (id: string) => request<BacktestCharts>(`/backtest/${encodeURIComponent(id)}/charts`)
 
 // ── Policies ───────────────────────────────────────────────
+// Mutating action params (approved_by, promoted_by, reason) move into POST
+// bodies once backends adopt libs/auth (deferred plan Step 5). For now we
+// keep the existing query-string contract but URL-encode user input.
 export const fetchPolicies   = (promotedOnly = false) => request<Policy[]>(`/rl/policies${promotedOnly ? '?promoted_only=true' : ''}`)
-export const fetchPolicy     = (id: string) => request<Policy>(`/rl/policies/${id}`)
-export const approvePolicy   = (id: string) => request<unknown>(`/rl/policies/${id}/approve?approved_by=admin`, { method: 'POST' })
-export const rejectPolicy    = (id: string, reason?: string) => request<unknown>(`/rl/policies/${id}/reject?reason=${reason || ''}`, { method: 'POST' })
-export const promotePolicy   = (id: string) => request<unknown>(`/rl/policies/${id}/promote?promoted_by=admin`, { method: 'POST' })
-export const deletePolicy    = (id: string) => request<void>(`/rl/policies/${id}`, { method: 'DELETE' })
+export const fetchPolicy     = (id: string) => request<Policy>(`/rl/policies/${encodeURIComponent(id)}`)
+export const approvePolicy   = (id: string) => request<unknown>(`/rl/policies/${encodeURIComponent(id)}/approve`, { method: 'POST' })
+export const rejectPolicy    = (id: string, reason?: string) => request<unknown>(`/rl/policies/${encodeURIComponent(id)}/reject?reason=${encodeURIComponent(reason ?? '')}`, { method: 'POST' })
+export const promotePolicy   = (id: string) => request<unknown>(`/rl/policies/${encodeURIComponent(id)}/promote`, { method: 'POST' })
+export const deletePolicy    = (id: string) => request<void>(`/rl/policies/${encodeURIComponent(id)}`, { method: 'DELETE' })
 
 // ── Datasets ───────────────────────────────────────────────
 export const fetchDatasets   = () => request<Dataset[]>('/datasets')
-export const fetchDataset    = (id: string) => request<Dataset>(`/datasets/${id}`)
-export const deleteDataset   = (id: string) => request<void>(`/datasets/${id}`, { method: 'DELETE' })
+export const fetchDataset    = (id: string) => request<Dataset>(`/datasets/${encodeURIComponent(id)}`)
+export const deleteDataset   = (id: string) => request<void>(`/datasets/${encodeURIComponent(id)}`, { method: 'DELETE' })
 export const buildDataset    = (payload: BuildDatasetPayload) => request<BuildDatasetResponse>('/datasets/build', { method: 'POST', body: JSON.stringify(payload) })
 
 // ── Market / Ingest ────────────────────────────────────────
+const encodeSymbols = (symbols: string[]) => symbols.map(encodeURIComponent).join(',')
+
 export const fetchSymbols    = () => request<string[]>('/market/symbols')
 export const checkBarData    = (symbols: string[], startDate: string, endDate: string, timeframe: '1m' | '1d') =>
-  request<BarAvailability[]>(`/market/availability?symbols=${symbols.join(',')}&start=${startDate}&end=${endDate}&timeframe=${timeframe}`)
+  request<BarAvailability[]>(`/market/availability?symbols=${encodeSymbols(symbols)}&start=${encodeURIComponent(startDate)}&end=${encodeURIComponent(endDate)}&timeframe=${timeframe}`)
 export const backfillData    = (payload: BackfillPayload) => request<BackfillResponse>('/market/backfill', { method: 'POST', body: JSON.stringify(payload) })
 
 // ── Features ───────────────────────────────────────────────
 export const checkFeatureAvailability = (symbols: string[], startDate: string, endDate: string) =>
-  request<Record<string, FeatureAvailability>>(`/features/availability?symbols=${symbols.join(',')}&start_date=${startDate}&end_date=${endDate}`)
+  request<Record<string, FeatureAvailability>>(`/features/availability?symbols=${encodeSymbols(symbols)}&start_date=${encodeURIComponent(startDate)}&end_date=${encodeURIComponent(endDate)}`)
 export const computeFeatures = (payload: ComputeFeaturesPayload) => request<Record<string, unknown>>('/features/compute', { method: 'POST', body: JSON.stringify(payload) })
 
 // ── Config ─────────────────────────────────────────────────

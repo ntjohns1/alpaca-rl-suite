@@ -7,7 +7,7 @@ import { ExternalLink, RefreshCw } from 'lucide-react'
 
 export function Monitoring() {
   const { data: config } = useQuery({ queryKey: ['config'], queryFn: fetchConfig })
-  const { data: health, refetch, isFetching } = useQuery({ queryKey: ['services'], queryFn: fetchServices })
+  const { data: health, refetch, isFetching } = useQuery({ queryKey: ['services'], queryFn: fetchServices, refetchInterval: 30_000 })
 
   const grafanaUrl = config?.grafanaUrl || 'http://localhost:3100'
 

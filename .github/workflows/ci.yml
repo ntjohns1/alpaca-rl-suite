@@ -204,6 +204,10 @@ jobs:
   docker-compose-validate:
     name: Validate docker-compose
     runs-on: ubuntu-latest
+    env:
+      KEYCLOAK_URL: http://placeholder
+      KEYCLOAK_REALM: placeholder
+      KEYCLOAK_CLIENT_ID: placeholder
     steps:
       - uses: actions/checkout@v4
 

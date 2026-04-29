@@ -39,9 +39,13 @@ def app_client(mock_db_conn):
     mock_conn, mock_cursor = mock_db_conn
     # lifespan creates the table — cursor.execute just needs to not fail
     mock_cursor.execute.return_value = None
-    from main import app
-    with TestClient(app, raise_server_exceptions=False) as client:
-        yield client
+    from main import app, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {"preferred_username": "test-user"}
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 # ─── DB helper tests ─────────────────────────────────────────────────────────
@@ -322,14 +326,33 @@ class TestApprovalEndpoints:
             "rejection_reason": None,
         }])
         with patch("pandas.read_sql", return_value=job_df):
-            resp = app_client.post(
-                "/kaggle/jobs/job-1/approve-promotion",
-                json={"approved_by": "alice"}
-            )
+            # approved_by is intentionally NOT taken from the request — backend
+            # derives it from the validated JWT (preferred_username).
+            resp = app_client.post("/kaggle/jobs/job-1/approve-promotion")
         assert resp.status_code == 200
         body = resp.json()
         assert body["approvalStatus"] == "approved"
-        assert body["approvedBy"] == "alice"
+        assert body["approvedBy"] == "test-user"
+
+    def test_approve_ignores_client_supplied_identity(self, app_client, mock_db_conn):
+        """Even if a caller sends approved_by in the body, it must be ignored."""
+        mock_conn, mock_cursor = mock_db_conn
+        job_df = pd.DataFrame([{
+            "id": "job-1", "name": "test", "status": "pending_approval",
+            "approval_status": "pending", "config": '{"symbols":["SPY"]}',
+            "metadata": '{"policy_id":"pol-1"}',
+            "error": None, "config_hash": "abc",
+            "created_at": "2024-01-01", "updated_at": "2024-01-01",
+            "completed_at": None, "approved_by": None, "approved_at": None,
+            "rejection_reason": None,
+        }])
+        with patch("pandas.read_sql", return_value=job_df):
+            resp = app_client.post(
+                "/kaggle/jobs/job-1/approve-promotion",
+                json={"approved_by": "attacker"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["approvedBy"] == "test-user"
 
     def test_approve_fails_on_wrong_status(self, app_client):
         job_df = pd.DataFrame([{
@@ -341,10 +364,7 @@ class TestApprovalEndpoints:
             "rejection_reason": None,
         }])
         with patch("pandas.read_sql", return_value=job_df):
-            resp = app_client.post(
-                "/kaggle/jobs/job-1/approve-promotion",
-                json={"approved_by": "alice"}
-            )
+            resp = app_client.post("/kaggle/jobs/job-1/approve-promotion")
         assert resp.status_code == 400
 
     def test_reject_pending_approval_job(self, app_client, mock_db_conn):

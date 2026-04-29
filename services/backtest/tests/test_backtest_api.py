@@ -33,9 +33,13 @@ def mock_db_conn(monkeypatch):
 
 @pytest.fixture
 def app_client():
-    from main import app
-    with TestClient(app, raise_server_exceptions=False) as client:
-        yield client
+    from main import app, get_current_user
+    app.dependency_overrides[get_current_user] = lambda: {"preferred_username": "test-user"}
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield client
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def _make_equity_curve(n: int = 50) -> list[dict]:

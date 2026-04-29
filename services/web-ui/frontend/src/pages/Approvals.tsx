@@ -1,15 +1,16 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchJobs, approveJob, rejectJob, type KaggleJob } from '@/api/client'
+import { fetchJobs, approveJob, rejectJob, type KaggleJob, type BacktestMetrics } from '@/api/client'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/StatusBadge'
-import { CheckCircle2, XCircle, Clock, TrendingUp, TrendingDown, Target, BarChart3 } from 'lucide-react'
+import { CheckCircle2, XCircle, Clock, TrendingUp, TrendingDown, Target, BarChart3, MinusCircle } from 'lucide-react'
 
 export function Approvals() {
   const queryClient = useQueryClient()
   const { data: jobs = [], isLoading } = useQuery({
     queryKey: ['jobs', 'pending_approval'],
     queryFn: () => fetchJobs('pending_approval'),
+    refetchInterval: 30_000,
   })
 
   const approveMutation = useMutation({
@@ -74,7 +75,10 @@ function ApprovalCard({ job, onApprove, onReject, isApproving, isRejecting }: {
   job: KaggleJob; onApprove: () => void; onReject: () => void; isApproving: boolean; isRejecting: boolean
 }) {
   const meta = job.metadata || {}
-  const metrics = (meta as Record<string, unknown>).backtest_metrics as Record<string, number> | undefined
+  const metrics = (meta as Record<string, unknown>).backtest_metrics as BacktestMetrics | undefined
+
+  const evalPass = (v: number | null | undefined, threshold: (n: number) => boolean): boolean | null =>
+    v == null ? null : threshold(v)
 
   return (
     <Card className="border-amber-200">
@@ -94,13 +98,13 @@ function ApprovalCard({ job, onApprove, onReject, isApproving, isRejecting }: {
         {metrics ? (
           <div className="grid gap-4 sm:grid-cols-4">
             <MetricCard label="Sharpe Ratio" value={metrics.avgSharpe?.toFixed(3) ?? '-'} icon={TrendingUp}
-              pass={metrics.avgSharpe != null && metrics.avgSharpe > 1.0} />
+              pass={evalPass(metrics.avgSharpe, n => n > 1.0)} />
             <MetricCard label="Max Drawdown" value={metrics.avgMaxDrawdown != null ? `${(metrics.avgMaxDrawdown * 100).toFixed(1)}%` : '-'} icon={TrendingDown}
-              pass={metrics.avgMaxDrawdown != null && metrics.avgMaxDrawdown < 0.15} />
+              pass={evalPass(metrics.avgMaxDrawdown, n => n < 0.15)} />
             <MetricCard label="Win Rate" value={metrics.avgWinRate != null ? `${(metrics.avgWinRate * 100).toFixed(1)}%` : '-'} icon={Target}
-              pass={metrics.avgWinRate != null && metrics.avgWinRate > 0.5} />
+              pass={evalPass(metrics.avgWinRate, n => n > 0.5)} />
             <MetricCard label="Total Return" value={metrics.avgTotalReturn != null ? `${(metrics.avgTotalReturn * 100).toFixed(2)}%` : '-'} icon={BarChart3}
-              pass={metrics.avgTotalReturn != null && metrics.avgTotalReturn > 0} />
+              pass={evalPass(metrics.avgTotalReturn, n => n > 0)} />
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">No backtest metrics available for this job.</p>
@@ -121,19 +125,25 @@ function ApprovalCard({ job, onApprove, onReject, isApproving, isRejecting }: {
 }
 
 function MetricCard({ label, value, icon: Icon, pass }: {
-  label: string; value: string; icon: React.ComponentType<{ className?: string }>; pass: boolean
+  label: string; value: string; icon: React.ComponentType<{ className?: string }>; pass: boolean | null
 }) {
+  const tone =
+    pass === null  ? 'border-slate-200 bg-slate-50'
+    : pass         ? 'border-green-200 bg-green-50'
+    :                'border-red-200 bg-red-50'
+  const indicator =
+    pass === null ? <MinusCircle className="h-4 w-4 text-slate-400" />
+    : pass        ? <CheckCircle2 className="h-4 w-4 text-green-600" />
+    :               <XCircle className="h-4 w-4 text-red-500" />
   return (
-    <div className={`rounded-lg border p-3 ${pass ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+    <div className={`rounded-lg border p-3 ${tone}`}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">{label}</span>
         <Icon className="h-4 w-4 text-muted-foreground" />
       </div>
       <div className="mt-1 flex items-center gap-2">
         <span className="text-xl font-bold">{value}</span>
-        {pass
-          ? <CheckCircle2 className="h-4 w-4 text-green-600" />
-          : <XCircle className="h-4 w-4 text-red-500" />}
+        {indicator}
       </div>
     </div>
   )
