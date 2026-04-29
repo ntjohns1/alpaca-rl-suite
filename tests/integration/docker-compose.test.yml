@@ -85,8 +85,8 @@ services:
 
   kaggle-orchestrator:
     build:
-      context: ../../services/kaggle-orchestrator
-      dockerfile: Dockerfile
+      context: ../../
+      dockerfile: services/kaggle-orchestrator/Dockerfile
     container_name: alpaca_rl_kaggle_orchestrator_test
     environment:
       DATABASE_URL: postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl
