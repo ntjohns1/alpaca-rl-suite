@@ -155,9 +155,9 @@ jobs:
           - service: rl-train
             context: .
             dockerfile: services/rl-train/Dockerfile
-          # Python services (self context)
+          # Python services (repo-root context, reference services/shared)
           - service: backtest
-            context: services/backtest
+            context: .
             dockerfile: services/backtest/Dockerfile
           - service: rl-infer
             context: services/rl-infer
@@ -166,13 +166,13 @@ jobs:
             context: services/temporal-worker
             dockerfile: services/temporal-worker/Dockerfile
           - service: kaggle-orchestrator
-            context: services/kaggle-orchestrator
+            context: .
             dockerfile: services/kaggle-orchestrator/Dockerfile
           - service: dashboard
-            context: services/dashboard
+            context: .
             dockerfile: services/dashboard/Dockerfile
           - service: web-ui
-            context: services/web-ui
+            context: .
             dockerfile: services/web-ui/Dockerfile
     steps:
       - uses: actions/checkout@v4

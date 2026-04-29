@@ -38,7 +38,7 @@ declare -A SERVICES=(
 )
 
 # Services that use their own directory as build context (not repo root)
-SELF_CONTEXT_SERVICES="backtest rl-infer temporal-worker kaggle-orchestrator dashboard web-ui"
+SELF_CONTEXT_SERVICES="rl-infer temporal-worker"
 
 # Parse args
 TARGETS=()
