@@ -147,13 +147,38 @@ def _install_stubs():
         class Request:
             pass
 
+        class _Status:
+            HTTP_401_UNAUTHORIZED = 401
+            HTTP_403_FORBIDDEN = 403
+            HTTP_503_SERVICE_UNAVAILABLE = 503
+
         fastapi.FastAPI = FastAPI
         fastapi.BackgroundTasks = BackgroundTasks
         fastapi.HTTPException = HTTPException
         fastapi.Depends = lambda dependency=None, **kwargs: dependency
         fastapi.Query = lambda default=None, **kwargs: default
         fastapi.Request = Request
+        fastapi.status = _Status()
         sys.modules["fastapi"] = fastapi
+
+    if "fastapi.security" not in sys.modules:
+        security = types.ModuleType("fastapi.security")
+
+        class HTTPAuthorizationCredentials:
+            def __init__(self, scheme="Bearer", credentials=""):
+                self.scheme = scheme
+                self.credentials = credentials
+
+        class HTTPBearer:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __call__(self, *args, **kwargs):
+                return None
+
+        security.HTTPAuthorizationCredentials = HTTPAuthorizationCredentials
+        security.HTTPBearer = HTTPBearer
+        sys.modules["fastapi.security"] = security
 
     if "fastapi.responses" not in sys.modules:
         responses = types.ModuleType("fastapi.responses")
