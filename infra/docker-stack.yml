@@ -3,7 +3,7 @@
 #
 # Node labels required:
 #   server_1 (192.168.10.104): role=data     (Swarm Manager)
-#   server_5 (192.168.10.116): role=compute  (Swarm Worker)
+#   server_7 (192.168.10.113): role=compute  (Swarm Worker)
 #   server_6 (192.168.10.105): role=trading  (Swarm Worker)
 #
 # Preserve infra/docker-compose.yml for local dev — this file is Swarm-only.
@@ -457,7 +457,7 @@ services:
         order: start-first
 
   # ═══════════════════════════════════════════════════════════════════════
-  # COMPUTE + OBSERVABILITY NODE — server_5 (role=compute)
+  # COMPUTE + OBSERVABILITY NODE — server_7 (role=compute)
   # ═══════════════════════════════════════════════════════════════════════
 
   feature-builder:
@@ -700,7 +700,7 @@ services:
         parallelism: 1
         order: start-first
 
-  # ─── Observability (role=compute / server_5) ──────────────────────────
+  # ─── Observability (role=compute / server_7) ──────────────────────────
 
   prometheus:
     image: prom/prometheus:latest
