@@ -105,6 +105,10 @@ def _extract_list_assignment(source: str, variable_name: str) -> list[str]:
 
 
 def _install_stubs():
+    os.environ.setdefault("KEYCLOAK_URL", "http://placeholder")
+    os.environ.setdefault("KEYCLOAK_REALM", "placeholder")
+    os.environ.setdefault("KEYCLOAK_CLIENT_ID", "placeholder")
+
     if "observability" not in sys.modules:
         observability = types.ModuleType("observability")
         observability.setup_observability = lambda *args, **kwargs: None
