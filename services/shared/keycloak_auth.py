@@ -189,13 +189,29 @@ def keycloak_auth_from_env() -> KeycloakAuth:
 _security = HTTPBearer(auto_error=False)
 
 
+_AUTH_DISABLED_STUB = {
+    "sub": "integration-test",
+    "preferred_username": "integration-test",
+    "email": "integration-test@localhost",
+    "realm_access": {"roles": []},
+    "resource_access": {},
+}
+
+
 def make_auth_dependencies(auth: KeycloakAuth):
     """Build FastAPI dependencies bound to a KeycloakAuth instance."""
+
+    _auth_disabled = os.environ.get("AUTH_DISABLED", "").lower() == "true"
+    if _auth_disabled:
+        log.warning("AUTH_DISABLED=true — all auth checks bypassed (integration test mode only)")
 
     async def get_current_user(
         request: Request,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
     ) -> dict:
+        if _auth_disabled:
+            request.state.user = _AUTH_DISABLED_STUB
+            return _AUTH_DISABLED_STUB
         if credentials is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -211,6 +227,9 @@ def make_auth_dependencies(auth: KeycloakAuth):
         request: Request,
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(_security),
     ) -> Optional[dict]:
+        if _auth_disabled:
+            request.state.user = _AUTH_DISABLED_STUB
+            return _AUTH_DISABLED_STUB
         if credentials is None:
             return None
         try:

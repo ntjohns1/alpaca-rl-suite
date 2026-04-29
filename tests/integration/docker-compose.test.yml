@@ -55,6 +55,10 @@ services:
     environment:
       DATABASE_URL: postgresql://rl_user:rl_pass@postgres:5432/alpaca_rl
       FEATURE_BUILDER_PORT: 8002
+      KEYCLOAK_URL: http://placeholder
+      KEYCLOAK_REALM: placeholder
+      KEYCLOAK_CLIENT_ID: placeholder
+      AUTH_DISABLED: "true"
     ports:
       - "18002:8002"
     depends_on:
@@ -73,6 +77,10 @@ services:
       S3_BUCKET: alpaca-rl-artifacts
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
+      KEYCLOAK_URL: http://placeholder
+      KEYCLOAK_REALM: placeholder
+      KEYCLOAK_CLIENT_ID: placeholder
+      AUTH_DISABLED: "true"
     ports:
       - "18003:8003"
     depends_on:
@@ -97,6 +105,10 @@ services:
       S3_SECRET_KEY: minioadmin
       KAGGLE_API_TOKEN: ""
       KAGGLE_USERNAME: ""
+      KEYCLOAK_URL: http://placeholder
+      KEYCLOAK_REALM: placeholder
+      KEYCLOAK_CLIENT_ID: placeholder
+      AUTH_DISABLED: "true"
     ports:
       - "18011:8011"
     depends_on:
