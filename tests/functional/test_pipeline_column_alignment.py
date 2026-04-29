@@ -161,6 +161,43 @@ def _install_stubs():
         fastapi.status = _Status()
         sys.modules["fastapi"] = fastapi
 
+    if "jose" not in sys.modules:
+        jose = types.ModuleType("jose")
+
+        class JWTError(Exception):
+            pass
+
+        class _JWT:
+            def decode(self, *args, **kwargs):
+                return {}
+
+            def get_unverified_header(self, token):
+                return {}
+
+        jose.JWTError = JWTError
+        jose.jwt = _JWT()
+        sys.modules["jose"] = jose
+
+    if "jose.backends" not in sys.modules:
+        jose_backends = types.ModuleType("jose.backends")
+
+        class RSAKey:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        jose_backends.RSAKey = RSAKey
+        sys.modules["jose.backends"] = jose_backends
+
+    if "keycloak" not in sys.modules:
+        keycloak = types.ModuleType("keycloak")
+
+        class KeycloakOpenID:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        keycloak.KeycloakOpenID = KeycloakOpenID
+        sys.modules["keycloak"] = keycloak
+
     if "fastapi.security" not in sys.modules:
         security = types.ModuleType("fastapi.security")
 
