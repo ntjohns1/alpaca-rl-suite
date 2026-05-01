@@ -138,6 +138,8 @@ services:
       NATS_URL: nats://nats:4222
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRES_IN: 24h
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
@@ -171,6 +173,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
       ALPACA_API_KEY: ${ALPACA_API_KEY}
       ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
@@ -206,6 +209,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       ALPACA_BASE_URL: https://paper-api.alpaca.markets
       ALPACA_DATA_URL: https://data.alpaca.markets
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
@@ -238,6 +244,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       ORDERS_PORT: "3004"
     ports:
@@ -268,6 +277,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       MAX_DAILY_LOSS_USD: "1000"
       MAX_POSITION_SIZE_PCT: "0.10"
       KILL_SWITCH_ENABLED: "false"
@@ -301,6 +313,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       PORTFOLIO_PORT: "3006"
     ports:
@@ -331,6 +346,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       TRADING_MODE: paper
       STRATEGY_RUNNER_PORT: "3007"
@@ -362,6 +380,9 @@ services:
     environment:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
+      JWT_SECRET: ${JWT_SECRET}
+      ALPACA_API_KEY: ${ALPACA_API_KEY}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       API_GATEWAY_PORT: "3000"
     ports:
