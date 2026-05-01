@@ -20,15 +20,15 @@ exporters:
     endpoint: 0.0.0.0:8889
     namespace: alpaca_rl
 
-  logging:
-    loglevel: warn
+  debug:
+    verbosity: basic
 
 service:
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [logging]
+      exporters: [debug]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
@@ -36,4 +36,4 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [logging]
+      exporters: [debug]
