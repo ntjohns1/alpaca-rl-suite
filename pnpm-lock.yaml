@@ -471,31 +471,22 @@ importers:
       fastify:
         specifier: ^4.27.0
         version: 4.29.1
-      nats:
-        specifier: ^2.18.0
-        version: 2.29.3
-      pg:
-        specifier: ^8.11.0
-        version: 8.19.0
+      jsonwebtoken:
+        specifier: ^9.0.0
+        version: 9.0.3
       prom-client:
         specifier: ^15.1.0
         version: 15.1.3
-      uuid:
-        specifier: ^9.0.0
-        version: 9.0.1
       zod:
         specifier: ^3.22.0
         version: 3.25.76
     devDependencies:
+      '@types/jsonwebtoken':
+        specifier: ^9.0.0
+        version: 9.0.10
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.35
-      '@types/pg':
-        specifier: ^8.11.0
-        version: 8.18.0
-      '@types/uuid':
-        specifier: ^9.0.0
-        version: 9.0.8
       ts-node-dev:
         specifier: ^2.0.0
         version: 2.0.0(@types/node@20.19.35)(typescript@5.9.3)
