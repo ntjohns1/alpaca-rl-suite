@@ -782,7 +782,7 @@ services:
       - "4317:4317"
       - "4318:4318"
     configs:
-      - source: otel-config
+      - source: otel-config-v2
         target: /etc/otelcol-contrib/config.yaml
     networks:
       - backend
@@ -818,5 +818,5 @@ configs:
     file: ./observability/alerts.yml
   alertmanager-config:
     file: ./observability/alertmanager.yml
-  otel-config:
+  otel-config-v2:
     file: ./observability/otel-collector.yml
