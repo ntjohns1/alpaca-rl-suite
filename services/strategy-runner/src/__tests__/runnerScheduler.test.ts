@@ -1,39 +1,82 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { Config } from '@alpaca-rl/config';
 
 // ── fetch mock (hoisted so vi.mock factory can reference it) ─────────
-const { mockFetch } = vi.hoisted(() => {
-  const mockFetch = vi.fn();
-  return { mockFetch };
-});
-
+const { mockFetch } = vi.hoisted(() => ({ mockFetch: vi.fn() }));
 vi.stubGlobal('fetch', mockFetch);
 
 // ── Import after stub ─────────────────────────────────────────────────
 import { RunnerScheduler } from '../runnerScheduler';
 
-const mockConfig = {
-  RISK_URL:           'http://risk:3005',
+const mockConfig: Config = {
+  RISK_URL:           'http://risk:3006',
   RL_INFER_URL:       'http://rl-infer:8005',
   MARKET_INGEST_URL:  'http://market-ingest:3003',
   FEATURE_BUILDER_URL:'http://feature-builder:8002',
-  ORDERS_URL:         'http://orders:3004',
-  PORTFOLIO_URL:      'http://portfolio:3006',
+  ORDERS_URL:         'http://orders:3005',
+  PORTFOLIO_URL:      'http://portfolio:3004',
   STRATEGY_RUNNER_PORT: 3007,
   MAX_POSITION_SIZE_PCT: 0.1,
-} as any;
+} as unknown as Config;
+
+const silentLogger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
 
 // ── helpers ──────────────────────────────────────────────────────────
 
-function jsonResp(body: unknown, ok = true) {
+function jsonResp(body: unknown, ok = true, status = ok ? 200 : 400) {
   return Promise.resolve({
     ok,
+    status,
     json: () => Promise.resolve(body),
   });
 }
 
-function makeBarRows(n = 25) {
-  return Array.from({ length: n }, (_, i) => ({ close: (100 + i).toString() }));
+/**
+ * URL-keyed mock dispatcher. Match each request by URL substring; default
+ * responses cover the happy path so tests only need to override what they care
+ * about. Robust to call-order changes — the old chained mockResolvedValueOnce
+ * approach broke whenever fetch order shifted.
+ */
+type RouteKey =
+  | 'risk/state'
+  | 'risk/check'
+  | 'portfolio/account'
+  | 'portfolio/positions'
+  | 'portfolio/sync'
+  | 'features/latest'
+  | 'infer/action'
+  | 'orders';
+
+interface RouteResponses {
+  [k: string]: { body: unknown; ok?: boolean; status?: number } | undefined;
 }
+
+function installRoutes(overrides: Partial<Record<RouteKey, { body: unknown; ok?: boolean; status?: number }>> = {}) {
+  const defaults: RouteResponses = {
+    'risk/state':         { body: { kill_switch: false } },
+    'risk/check':         { body: { ok: true } },
+    'portfolio/account':  { body: { equity: '100000' } },
+    'portfolio/positions':{ body: [] },
+    'portfolio/sync':     { body: { ok: true } },
+    'features/latest':    { body: { state_vector: Array(10).fill(0.1) } },
+    'infer/action':       { body: { action: 1 } },
+    'orders':             { body: { orderId: 'o1' } },
+  };
+  const routes = { ...defaults, ...overrides };
+
+  mockFetch.mockImplementation((url: string) => {
+    const key = (Object.keys(routes) as RouteKey[]).find((k) => url.includes(k));
+    const r = key ? routes[key] : undefined;
+    if (!r) return jsonResp({}, true);
+    return jsonResp(r.body, r.ok ?? true, r.status ?? (r.ok === false ? 400 : 200));
+  });
+}
+
+function findCalls(substr: string): Array<[string, RequestInit?]> {
+  return mockFetch.mock.calls.filter((c) => (c[0] as string).includes(substr)) as any;
+}
+
+// ── tests ────────────────────────────────────────────────────────────
 
 describe('RunnerScheduler', () => {
   let scheduler: RunnerScheduler;
@@ -41,138 +84,209 @@ describe('RunnerScheduler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     process.env.TRADING_SYMBOLS = 'AAPL';
-    scheduler = new RunnerScheduler(mockConfig);
+    delete process.env.TICK_INTERVAL_MS;
+    delete process.env.RUNNER_FETCH_TIMEOUT_MS;
+    scheduler = new RunnerScheduler(mockConfig, silentLogger);
   });
 
-  it('start() sets running=true and stop() sets it back to false', () => {
+  it('start() / stop() flip running flag', async () => {
     expect(scheduler.isRunning()).toBe(false);
     scheduler.start();
     expect(scheduler.isRunning()).toBe(true);
-    scheduler.stop();
+    await scheduler.stop();
     expect(scheduler.isRunning()).toBe(false);
   });
 
-  it('symbols() returns symbols from env', () => {
-    process.env.TRADING_SYMBOLS = 'AAPL,TSLA';
-    const s = new RunnerScheduler(mockConfig);
-    expect(s.symbols()).toEqual(['AAPL', 'TSLA']);
+  it('symbols() trims whitespace from env', () => {
+    process.env.TRADING_SYMBOLS = 'AAPL, MSFT , GOOGL';
+    const s = new RunnerScheduler(mockConfig, silentLogger);
+    expect(s.symbols()).toEqual(['AAPL', 'MSFT', 'GOOGL']);
   });
 
-  it('tick() aborts early when kill switch is active', async () => {
-    mockFetch
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ kill_switch: true }) }); // risk state
-
+  it('aborts when kill switch is on', async () => {
+    installRoutes({ 'risk/state': { body: { kill_switch: true } } });
     await scheduler.tick();
-
-    // only one fetch call — no infer, no orders
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledWith(expect.stringContaining('/risk/state'));
+    expect(findCalls('infer/action')).toHaveLength(0);
+    expect(findCalls('orders')).toHaveLength(0);
   });
 
-  it('tick() aborts early when risk service is unavailable', async () => {
-    mockFetch.mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) });
-
+  it('aborts (fail-closed) when risk service is unavailable', async () => {
+    installRoutes({ 'risk/state': { body: {}, ok: false, status: 503 } });
     await scheduler.tick();
-
-    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(findCalls('infer/action')).toHaveLength(0);
+    expect(findCalls('orders')).toHaveLength(0);
   });
 
-  it('tick() calls infer for each symbol when kill switch is off', async () => {
-    mockFetch
-      .mockResolvedValueOnce(jsonResp({ kill_switch: false }))          // risk state
-      .mockResolvedValueOnce(jsonResp(makeBarRows()))                    // bars AAPL
-      .mockResolvedValueOnce(jsonResp({ state_vector: Array(10).fill(0.1) })) // features
-      .mockResolvedValueOnce(jsonResp({ action: 1, qValues: [0, 1, 0] }))    // infer → HOLD
-      .mockResolvedValueOnce(jsonResp({}));                              // portfolio sync
-
+  it('aborts (fail-closed) when risk-state body is malformed (no kill_switch field)', async () => {
+    installRoutes({ 'risk/state': { body: { ok: true } } }); // missing kill_switch
     await scheduler.tick();
-
-    const calls = mockFetch.mock.calls.map((c) => c[0] as string);
-    expect(calls.some((u) => u.includes('/risk/state'))).toBe(true);
-    expect(calls.some((u) => u.includes('/infer/action'))).toBe(true);
-    expect(calls.some((u) => u.includes('/portfolio/sync'))).toBe(true);
+    expect(findCalls('infer/action')).toHaveLength(0);
+    expect(findCalls('orders')).toHaveLength(0);
   });
 
-  it('tick() submits buy order for LONG signal after passing risk check', async () => {
-    mockFetch
-      .mockResolvedValueOnce(jsonResp({ kill_switch: false }))                // risk state
-      .mockResolvedValueOnce(jsonResp(makeBarRows()))                          // bars
-      .mockResolvedValueOnce(jsonResp({ state_vector: Array(10).fill(0.1) })) // features
-      .mockResolvedValueOnce(jsonResp({ action: 2, qValues: [0, 0, 1] }))     // infer → LONG
-      .mockResolvedValueOnce(jsonResp({}, true))                               // risk check passes
-      .mockResolvedValueOnce(jsonResp({ orderId: 'o1' }))                      // orders
-      .mockResolvedValueOnce(jsonResp({}));                                    // portfolio sync
-
+  it('aborts (fail-closed) when kill_switch is non-boolean', async () => {
+    installRoutes({ 'risk/state': { body: { kill_switch: 'false' } } });
     await scheduler.tick();
-
-    const calls = mockFetch.mock.calls.map((c) => c[0] as string);
-    expect(calls.some((u) => u.includes('/risk/check'))).toBe(true);
-    expect(calls.some((u) => u.includes('/orders'))).toBe(true);
-
-    const orderCall = mockFetch.mock.calls.find((c) => (c[0] as string).includes('/orders'));
-    const orderBody = JSON.parse(orderCall![1].body as string);
-    expect(orderBody.side).toBe('buy');
-    expect(orderBody.symbol).toBe('AAPL');
+    expect(findCalls('infer/action')).toHaveLength(0);
   });
 
-  it('tick() blocks order when risk check fails', async () => {
-    mockFetch
-      .mockResolvedValueOnce(jsonResp({ kill_switch: false }))
-      .mockResolvedValueOnce(jsonResp(makeBarRows()))
-      .mockResolvedValueOnce(jsonResp({ state_vector: Array(10).fill(0.1) }))
-      .mockResolvedValueOnce(jsonResp({ action: 2 }))                    // LONG
-      .mockResolvedValueOnce(jsonResp({ reason: 'daily loss exceeded' }, false)) // risk BLOCKS
-      .mockResolvedValueOnce(jsonResp({}));                               // portfolio sync
-
+  it('skips tick when equity is unknown', async () => {
+    installRoutes({ 'portfolio/account': { body: {}, ok: false, status: 500 } });
     await scheduler.tick();
-
-    const calls = mockFetch.mock.calls.map((c) => c[0] as string);
-    // risk/check called but /orders must NOT be called
-    expect(calls.some((u) => u.includes('/risk/check'))).toBe(true);
-    expect(calls.every((u) => !u.includes('/orders'))).toBe(true);
+    expect(findCalls('orders')).toHaveLength(0);
   });
 
-  it('tick() does not submit order for HOLD signal', async () => {
-    mockFetch
-      .mockResolvedValueOnce(jsonResp({ kill_switch: false }))
-      .mockResolvedValueOnce(jsonResp(makeBarRows()))
-      .mockResolvedValueOnce(jsonResp({ state_vector: Array(10).fill(0.0) }))
-      .mockResolvedValueOnce(jsonResp({ action: 1 }))                    // HOLD
-      .mockResolvedValueOnce(jsonResp({}));                               // portfolio sync
-
+  it('skips tick when positions are unknown (HTTP error) — no over-trading on portfolio outage', async () => {
+    installRoutes({
+      'portfolio/positions': { body: {}, ok: false, status: 503 },
+      'infer/action': { body: { action: 2 } }, // would otherwise buy
+    });
     await scheduler.tick();
-
-    const calls = mockFetch.mock.calls.map((c) => c[0] as string);
-    expect(calls.every((u) => !u.includes('/orders'))).toBe(true);
-    expect(calls.every((u) => !u.includes('/risk/check'))).toBe(true);
+    expect(findCalls('orders')).toHaveLength(0);
   });
 
-  it('tick() submits sell order for SHORT signal after passing risk check', async () => {
-    mockFetch
-      .mockResolvedValueOnce(jsonResp({ kill_switch: false }))
-      .mockResolvedValueOnce(jsonResp(makeBarRows()))
-      .mockResolvedValueOnce(jsonResp({ state_vector: Array(10).fill(-0.1) }))
-      .mockResolvedValueOnce(jsonResp({ action: 0 }))                    // SHORT
-      .mockResolvedValueOnce(jsonResp({}, true))                         // risk check passes
-      .mockResolvedValueOnce(jsonResp({ orderId: 'o2' }))
-      .mockResolvedValueOnce(jsonResp({}));
-
+  it('skips tick when positions response is malformed', async () => {
+    installRoutes({
+      'portfolio/positions': { body: { not: 'an array' } },
+      'infer/action': { body: { action: 2 } },
+    });
     await scheduler.tick();
-
-    const orderCall = mockFetch.mock.calls.find((c) => (c[0] as string).includes('/orders'));
-    const orderBody = JSON.parse(orderCall![1].body as string);
-    expect(orderBody.side).toBe('sell');
+    expect(findCalls('orders')).toHaveLength(0);
   });
 
-  it('tick() falls back to simple returns when feature service unavailable', async () => {
-    mockFetch
-      .mockResolvedValueOnce(jsonResp({ kill_switch: false }))
-      .mockResolvedValueOnce(jsonResp(makeBarRows(30)))      // bars
-      .mockResolvedValueOnce({ ok: false, json: () => Promise.resolve({}) }) // features fail
-      .mockResolvedValueOnce(jsonResp({ action: 1 }))        // HOLD
-      .mockResolvedValueOnce(jsonResp({}));                   // portfolio sync
+  it('LONG signal with no current position → buy at full target notional', async () => {
+    installRoutes({ 'infer/action': { body: { action: 2 } } });
+    await scheduler.tick();
+    const orderCalls = findCalls('orders');
+    expect(orderCalls).toHaveLength(1);
+    const body = JSON.parse(orderCalls[0][1]!.body as string);
+    expect(body.side).toBe('buy');
+    expect(body.symbol).toBe('AAPL');
+    expect(body.notional).toBe(10000); // 100k * 0.1
+  });
 
-    // Should not throw
-    await expect(scheduler.tick()).resolves.toBeUndefined();
+  it('LONG signal with existing position equal to target → no order (delta ≈ 0)', async () => {
+    installRoutes({
+      'portfolio/positions': { body: [{ symbol: 'AAPL', market_value: 10000 }] },
+      'infer/action':        { body: { action: 2 } },
+    });
+    await scheduler.tick();
+    expect(findCalls('orders')).toHaveLength(0);
+  });
+
+  it('LONG signal with partial position → buys only the delta', async () => {
+    installRoutes({
+      'portfolio/positions': { body: [{ symbol: 'AAPL', market_value: 4000 }] },
+      'infer/action':        { body: { action: 2 } },
+    });
+    await scheduler.tick();
+    const orderCalls = findCalls('orders');
+    expect(orderCalls).toHaveLength(1);
+    const body = JSON.parse(orderCalls[0][1]!.body as string);
+    expect(body.notional).toBe(6000);
+  });
+
+  it('SHORT signal with no position → no order (we do not open margin shorts)', async () => {
+    installRoutes({ 'infer/action': { body: { action: 0 } } });
+    await scheduler.tick();
+    expect(findCalls('orders')).toHaveLength(0);
+  });
+
+  it('SHORT signal with existing long position → sell to close it', async () => {
+    installRoutes({
+      'portfolio/positions': { body: [{ symbol: 'AAPL', market_value: 7500 }] },
+      'infer/action':        { body: { action: 0 } },
+    });
+    await scheduler.tick();
+    const orderCalls = findCalls('orders');
+    expect(orderCalls).toHaveLength(1);
+    const body = JSON.parse(orderCalls[0][1]!.body as string);
+    expect(body.side).toBe('sell');
+    expect(body.notional).toBe(7500);
+  });
+
+  it('HOLD signal → no risk-check, no order', async () => {
+    installRoutes({ 'infer/action': { body: { action: 1 } } });
+    await scheduler.tick();
+    expect(findCalls('risk/check')).toHaveLength(0);
+    expect(findCalls('orders')).toHaveLength(0);
+  });
+
+  it('blocks order when risk/check rejects', async () => {
+    installRoutes({
+      'infer/action': { body: { action: 2 } },
+      'risk/check':   { body: { reason: 'daily loss exceeded' }, ok: false, status: 403 },
+    });
+    await scheduler.tick();
+    expect(findCalls('risk/check')).toHaveLength(1);
+    expect(findCalls('orders')).toHaveLength(0);
+  });
+
+  it('idempotency key is deterministic given the same trace', async () => {
+    installRoutes({ 'infer/action': { body: { action: 2 } } });
+    await scheduler.tick();
+    const orderCalls = findCalls('orders');
+    expect(orderCalls).toHaveLength(1);
+    const body = JSON.parse(orderCalls[0][1]!.body as string);
+    // {traceId}-{symbol}-{side}
+    expect(body.idempotencyKey).toMatch(/^.+-AAPL-buy$/);
+    expect(body.idempotencyKey.endsWith(`-${body.symbol}-${body.side}`)).toBe(true);
+  });
+
+  it('infer with malformed action → no order, no throw', async () => {
+    installRoutes({ 'infer/action': { body: { action: 7 } } });
+    await expect(scheduler.tick()).resolves.toEqual({ executed: true });
+    expect(findCalls('orders')).toHaveLength(0);
+  });
+
+  it('feature service unavailable → symbol skipped, no infer call, no order', async () => {
+    installRoutes({
+      'features/latest': { body: {}, ok: false, status: 503 },
+      'infer/action':    { body: { action: 2 } }, // would otherwise trigger order
+    });
+    await scheduler.tick();
+    expect(findCalls('infer/action')).toHaveLength(0);
+    expect(findCalls('orders')).toHaveLength(0);
+  });
+
+  it('orders endpoint returning 500 → logged, no throw, no success metric', async () => {
+    installRoutes({
+      'infer/action': { body: { action: 2 } },
+      'orders':       { body: { error: 'broker down' }, ok: false, status: 500 },
+    });
+    await expect(scheduler.tick()).resolves.toEqual({ executed: true });
+    expect(findCalls('orders')).toHaveLength(1);
+  });
+
+  it('overlapping tick is skipped while previous is in flight, and reports executed=false', async () => {
+    let resolveRisk: (v: any) => void = () => {};
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes('risk/state')) {
+        return new Promise((r) => { resolveRisk = r; });
+      }
+      return jsonResp({ ok: true });
+    });
+
+    const first = scheduler.tick();
+    const second = await scheduler.tick();
+    expect(second.executed).toBe(false);
+    expect(second.reason).toBe('overlap');
+    expect(findCalls('risk/state')).toHaveLength(1);
+
+    resolveRisk({ ok: true, status: 200, json: () => Promise.resolve({ kill_switch: true }) });
+    const firstResult = await first;
+    expect(firstResult.executed).toBe(true);
+  });
+
+  it('fetch timeout aborts cleanly without throwing through tick()', async () => {
+    process.env.RUNNER_FETCH_TIMEOUT_MS = '20';
+    const s = new RunnerScheduler(mockConfig, silentLogger);
+    mockFetch.mockImplementation((_url: string, init?: RequestInit) => {
+      // Return a never-resolving response; rely on AbortController to fire.
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    });
+    await expect(s.tick()).resolves.toEqual({ executed: true });
   });
 });

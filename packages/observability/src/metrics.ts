@@ -54,3 +54,34 @@ export const rlTrainingEpisodes = new client.Counter({
   help: 'Total RL training episodes completed',
   labelNames: ['run_id', 'symbol'] as const,
 });
+
+// ── Strategy-runner business metrics ─────────────────────────────────
+
+export const runnerTicksTotal = new client.Counter({
+  name: 'alpaca_rl_runner_ticks_total',
+  help: 'Total scheduler ticks',
+  labelNames: ['outcome'] as const, // success | skipped_kill_switch | skipped_risk_unavailable | skipped_overlap | error
+});
+
+export const runnerTickDurationMs = new client.Histogram({
+  name: 'alpaca_rl_runner_tick_duration_ms',
+  help: 'Scheduler tick duration in milliseconds',
+  buckets: [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000, 60000],
+});
+
+export const runnerSignalsTotal = new client.Counter({
+  name: 'alpaca_rl_runner_signals_total',
+  help: 'Total inference signals received',
+  labelNames: ['symbol', 'action'] as const, // action: SHORT | HOLD | LONG
+});
+
+export const runnerOrdersSubmittedTotal = new client.Counter({
+  name: 'alpaca_rl_runner_orders_submitted_total',
+  help: 'Total orders submitted by the runner',
+  labelNames: ['symbol', 'side', 'outcome'] as const, // outcome: success | risk_blocked | order_failed | downstream_error
+});
+
+export const runnerEquityUsd = new client.Gauge({
+  name: 'alpaca_rl_runner_equity_usd',
+  help: 'Most recent equity used for sizing (USD)',
+});

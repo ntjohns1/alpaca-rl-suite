@@ -8,4 +8,9 @@ export {
   dailyLossUsd,
   natsMessagesConsumed,
   rlTrainingEpisodes,
+  runnerTicksTotal,
+  runnerTickDurationMs,
+  runnerSignalsTotal,
+  runnerOrdersSubmittedTotal,
+  runnerEquityUsd,
 } from './metrics';
