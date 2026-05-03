@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { NatsConnection, Status } from 'nats';
 
 // ── Hoisted mocks ────────────────────────────────────────────────────
 
@@ -76,6 +75,7 @@ vi.mock('prom-client', () => {
 
 // Import after mocks are set up
 import { AlpacaStreamer } from '../alpacaStreamer';
+import * as promClientMod from 'prom-client';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -168,6 +168,20 @@ describe('AlpacaStreamer', () => {
       const AlpacaAPI = (await import('@alpacahq/alpaca-trade-api')).default;
       expect(AlpacaAPI).toHaveBeenCalledTimes(1);
     });
+
+    it('treats onConnect as a no-op after sessionAborted (ghost-subscription guard)', async () => {
+      await streamer.connect();
+
+      mockStream.connect.mockImplementation(() => {
+        fireStreamEvent('onError', new Error('auth failed'));
+        // SDK may fire onConnect on the same socket after an auth-retry
+        fireStreamEvent('onConnect');
+      });
+
+      await expect(streamer.subscribeToDataStream(['AAPL'])).rejects.toThrow('auth failed');
+      expect(mockStream.subscribeForBars).not.toHaveBeenCalled();
+      expect(streamer.streamingHealthy).toBe(false);
+    });
   });
 
   describe('onBar handler', () => {
@@ -200,6 +214,7 @@ describe('AlpacaStreamer', () => {
     });
 
     it('drops bar and increments counter when NATS is closed', () => {
+      const barsDropped = (promClientMod as any).__getCounter?.('alpaca_rl_bars_dropped_total') as { inc: ReturnType<typeof vi.fn> };
       mockNatsConn.isClosed.mockReturnValueOnce(true);
 
       fireStreamEvent('onBar', {
@@ -213,6 +228,7 @@ describe('AlpacaStreamer', () => {
       });
 
       expect(mockNatsConn.publish).not.toHaveBeenCalled();
+      expect(barsDropped.inc).toHaveBeenCalledWith({ reason: 'nats_unavailable' });
     });
 
     it('drops invalid bar payload and logs', () => {
@@ -305,6 +321,56 @@ describe('AlpacaStreamer', () => {
       // connect was called once (initial) but not again after close
       expect(mockStream.connect).toHaveBeenCalledTimes(1);
     });
+
+    it('does not schedule a reconnect when close() triggers onDisconnect via disconnect()', async () => {
+      // Simulate real SDK behaviour: disconnect() fires onDisconnect synchronously
+      mockStream.disconnect.mockImplementation(() => fireStreamEvent('onDisconnect'));
+
+      await streamer.close();
+
+      vi.advanceTimersByTime(30_000);
+      // The onDisconnect fired by disconnect() must be a no-op due to the closed guard
+      expect(mockStream.connect).toHaveBeenCalledTimes(1);
+    });
+
+    it('increments streamErrorsTotal, sets unhealthy, and triggers reconnect via onDisconnect on post-connect error', () => {
+      const streamErrors = (promClientMod as any).__getCounter?.('alpaca_rl_stream_errors_total') as { inc: ReturnType<typeof vi.fn> };
+
+      mockStream.disconnect.mockImplementation(() => fireStreamEvent('onDisconnect'));
+      fireStreamEvent('onError', new Error('mid-session error'));
+
+      expect(streamErrors.inc).toHaveBeenCalledTimes(1);
+      expect(mockStream.disconnect).toHaveBeenCalled();
+      expect(streamer.streamingHealthy).toBe(false);
+
+      // onDisconnect should schedule a reconnect — advance the 1 s backoff
+      vi.advanceTimersByTime(1_000);
+      expect(mockStream.connect).toHaveBeenCalledTimes(2); // initial + 1 retry
+    });
+  });
+
+  describe('publishOrderEvent()', () => {
+    beforeEach(async () => {
+      await streamer.connect();
+    });
+
+    it('publishes to NATS when connection is open', async () => {
+      await streamer.publishOrderEvent('orders.filled', { orderId: 'abc' });
+      expect(mockNatsConn.publish).toHaveBeenCalledTimes(1);
+      const [subject, data] = mockNatsConn.publish.mock.calls[0];
+      expect(subject).toBe('orders.filled');
+      expect(JSON.parse(data.toString())).toEqual({ orderId: 'abc' });
+    });
+
+    it('increments ordersDroppedTotal and logs when NATS is closed', async () => {
+      const ordersDropped = (promClientMod as any).__getCounter?.('alpaca_rl_orders_dropped_total') as { inc: ReturnType<typeof vi.fn> };
+      mockNatsConn.isClosed.mockReturnValueOnce(true);
+
+      await streamer.publishOrderEvent('orders.filled', { orderId: 'xyz' });
+
+      expect(mockNatsConn.publish).not.toHaveBeenCalled();
+      expect(ordersDropped.inc).toHaveBeenCalledWith({ reason: 'nats_unavailable' });
+    });
   });
 
   describe('health getters', () => {
@@ -323,6 +389,18 @@ describe('AlpacaStreamer', () => {
       await streamer.close();
       expect(mockStream.disconnect).toHaveBeenCalled();
       expect(mockNatsConn.drain).toHaveBeenCalled();
+    });
+
+    it('sets streamingHealthy false when close() fires onDisconnect via disconnect()', async () => {
+      await streamer.connect();
+      mockStream.connect.mockImplementation(() => fireStreamEvent('onConnect'));
+      await streamer.subscribeToDataStream(['AAPL']);
+      expect(streamer.streamingHealthy).toBe(true);
+
+      mockStream.disconnect.mockImplementation(() => fireStreamEvent('onDisconnect'));
+      await streamer.close();
+
+      expect(streamer.streamingHealthy).toBe(false);
     });
   });
 });

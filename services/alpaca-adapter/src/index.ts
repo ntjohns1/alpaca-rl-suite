@@ -1,4 +1,6 @@
 import './tracing';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import Fastify from 'fastify';
 import { loadConfig } from '@alpaca-rl/config';
 import { AlpacaClient } from './alpacaClient';
@@ -56,13 +58,22 @@ app.get('/alpaca/bars/:timeframe/:symbol', async (req: any, reply) => {
   const { timeframe, symbol } = req.params;
   const { start, end } = req.query as { start?: string; end?: string };
   const rawLimit = (req.query as any).limit;
-  const limit = rawLimit !== undefined ? (parseInt(rawLimit, 10) || undefined) : undefined;
+  const limitParsed = rawLimit !== undefined ? parseInt(rawLimit as string, 10) : undefined;
+  const limit = limitParsed !== undefined && !Number.isNaN(limitParsed) && limitParsed > 0 ? limitParsed : undefined;
   const bars = await client.getBars(symbol, timeframe, start, end, limit);
   return reply.send(bars);
 });
 
 // ── Health ───────────────────────────────────────────────────────────
-const SERVICE_VERSION = process.env.npm_package_version ?? '0.1.0';
+function readPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8')) as { version?: string };
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+const SERVICE_VERSION = process.env.SERVICE_VERSION ?? readPackageVersion();
 
 app.get('/alpaca/health', async (_req, reply) => {
   const streamingCheckStatus = streamer.streamingDead ? 'error' : 'ok';
@@ -82,32 +93,35 @@ app.get('/alpaca/health', async (_req, reply) => {
       streaming: { status: streamingCheckStatus, message: streamingMessage },
     },
   });
-  reply.send(body);
+  reply.status(streamer.streamingDead ? 503 : 200).send(body);
 });
 
 const SYMBOL_PATTERN = /^[A-Z][A-Z0-9.]{0,7}$/;
-// 30 is the Alpaca IEX free-tier concurrent-symbol connection limit; SIP accounts may allow more
-const MAX_STREAM_SYMBOLS = 30;
+// 30 is the Alpaca IEX free-tier concurrent-symbol connection limit
+const IEX_MAX_STREAM_SYMBOLS = 30;
 
 const start = async () => {
-  await streamer.connect();
-
-  // Subscribe to real-time bar streaming if symbols are configured
+  // Validate STREAM_SYMBOLS before any I/O so startup failures are config errors, not runtime errors
+  let streamSymbols: string[] | null = null;
   if (config.STREAM_SYMBOLS) {
     const symbols = config.STREAM_SYMBOLS.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-    if (symbols.length > MAX_STREAM_SYMBOLS) {
+    if (config.ALPACA_FEED === 'iex' && symbols.length > IEX_MAX_STREAM_SYMBOLS) {
       throw new Error(
-        `STREAM_SYMBOLS has ${symbols.length} symbols, max is ${MAX_STREAM_SYMBOLS}`,
+        `STREAM_SYMBOLS has ${symbols.length} symbols, max is ${IEX_MAX_STREAM_SYMBOLS} for IEX feed`,
       );
     }
     const invalid = symbols.filter((s) => !SYMBOL_PATTERN.test(s));
     if (invalid.length > 0) {
       throw new Error(`STREAM_SYMBOLS contains invalid tickers: ${invalid.join(', ')}`);
     }
-    if (symbols.length > 0) {
-      await streamer.subscribeToDataStream(symbols);
-      console.log(`Subscribed to real-time bars for: ${symbols.join(', ')}`);
-    }
+    if (symbols.length > 0) streamSymbols = symbols;
+  }
+
+  await streamer.connect();
+
+  if (streamSymbols) {
+    await streamer.subscribeToDataStream(streamSymbols);
+    console.log(`Subscribed to real-time bars for: ${streamSymbols.join(', ')}`);
   }
 
   await app.listen({ port: config.ALPACA_ADAPTER_PORT, host: '0.0.0.0' });

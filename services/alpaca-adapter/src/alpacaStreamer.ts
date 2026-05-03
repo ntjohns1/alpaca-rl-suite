@@ -56,6 +56,23 @@ const barsDroppedTotal: client.Counter<'reason'> =
     registers: [registry],
   });
 
+const ordersDroppedTotal: client.Counter<'reason'> =
+  (registry.getSingleMetric('alpaca_rl_orders_dropped_total') as client.Counter<'reason'>) ??
+  new client.Counter({
+    name: 'alpaca_rl_orders_dropped_total',
+    help: 'Order events dropped because NATS was unavailable',
+    labelNames: ['reason'] as const,
+    registers: [registry],
+  });
+
+const streamErrorsTotal: client.Counter =
+  (registry.getSingleMetric('alpaca_rl_stream_errors_total') as client.Counter) ??
+  new client.Counter({
+    name: 'alpaca_rl_stream_errors_total',
+    help: 'Alpaca stream errors fired after initial connection; triggers reconnect via disconnect()',
+    registers: [registry],
+  });
+
 // ── Streamer ────────────────────────────────────────────────────────
 
 export class AlpacaStreamer {
@@ -63,7 +80,6 @@ export class AlpacaStreamer {
   private sc = StringCodec();
   private streamSymbols: string[] = [];
 
-  private alpacaInstance: (InstanceType<typeof AlpacaSDK> & { data_stream_v2: AlpacaDataStream }) | null = null;
   private stream: AlpacaDataStream | null = null;
 
   private wsRetryMs = WS_INITIAL_RETRY_MS;
@@ -129,12 +145,12 @@ export class AlpacaStreamer {
     this._streamingConfigured = true;
     this.streamSymbols = symbols;
 
-    this.alpacaInstance = new AlpacaAPI({
+    const alpacaInstance = new AlpacaAPI({
       keyId: this.config.ALPACA_API_KEY,
       secretKey: this.config.ALPACA_API_SECRET,
       paper: this.config.TRADING_MODE === 'paper',
     });
-    this.stream = this.alpacaInstance.data_stream_v2;
+    this.stream = alpacaInstance.data_stream_v2;
 
     return this.initStream();
   }
@@ -151,6 +167,7 @@ export class AlpacaStreamer {
       let sessionAborted = false;
 
       stream.onConnect(() => {
+        if (sessionAborted) return;
         this._streamingHealthy = true;
         this._streamingDead = false;
         this.wsRetryMs = WS_INITIAL_RETRY_MS;
@@ -194,8 +211,10 @@ export class AlpacaStreamer {
       });
 
       stream.onDisconnect(() => {
-        if (sessionAborted) return;
         this._streamingHealthy = false;
+        if (this.closed) return;
+        if (this._streamingDead) return;
+        if (sessionAborted) return;
         this.wsRetryCount++;
 
         if (this.wsRetryCount > WS_MAX_RECONNECT_ATTEMPTS) {
@@ -227,10 +246,15 @@ export class AlpacaStreamer {
         if (!initialSettled) {
           initialSettled = true;
           sessionAborted = true;
-          // Clear stream so the caller can retry subscribeToDataStream
           this.stream = null;
-          this.alpacaInstance = null;
+          this._streamingConfigured = false;
+          this.streamSymbols = [];
           reject(err);
+        } else {
+          if (this.closed) return;
+          streamErrorsTotal.inc();
+          this._streamingHealthy = false;
+          try { stream.disconnect(); } catch { /* force reconnect path via onDisconnect */ }
         }
       });
 
@@ -239,7 +263,11 @@ export class AlpacaStreamer {
   }
 
   async publishOrderEvent(subject: string, payload: object) {
-    if (!this.nc || this.nc.isClosed()) return;
+    if (!this.nc || this.nc.isClosed()) {
+      ordersDroppedTotal.inc({ reason: 'nats_unavailable' });
+      console.error('AlpacaStreamer: NATS unavailable, dropping order event for subject', subject);
+      return;
+    }
     this.nc.publish(subject, this.sc.encode(JSON.stringify(payload)));
   }
 
