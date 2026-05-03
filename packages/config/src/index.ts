@@ -47,6 +47,9 @@ const ConfigSchema = z.object({
   KILL_SWITCH_ENABLED: z.coerce.boolean().default(false),
   // Maximum age of a portfolio_value sync before /risk/check treats it as stale (seconds).
   MAX_PORTFOLIO_STALENESS_S: z.coerce.number().positive().default(3600),
+  // How often the risk service polls portfolio/account to refresh portfolio_value (ms).
+  // Must be less than half of MAX_PORTFOLIO_STALENESS_S * 1000; validated at startup.
+  RISK_PORTFOLIO_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
 
   // Trading mode
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),

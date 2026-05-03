@@ -4,13 +4,21 @@ import jwt from 'jsonwebtoken';
 // ── Mock config ───────────────────────────────────────────────────────────────
 const TEST_JWT_SECRET = 'test-secret-that-is-at-least-32-characters';
 
-vi.mock('@alpaca-rl/config', () => ({
-  loadConfig: () => ({
-    JWT_SECRET: TEST_JWT_SECRET,
-    MAX_POSITION_SIZE_PCT: 0.1,
-    MAX_PORTFOLIO_STALENESS_S: 3600,
-  }),
-}));
+// Build the mock config from the real schema defaults so future config fields
+// don't silently break tests at runtime when createApp reads them.
+vi.mock('@alpaca-rl/config', async () => {
+  const real = await vi.importActual<typeof import('@alpaca-rl/config')>('@alpaca-rl/config');
+  const testEnv: NodeJS.ProcessEnv = {
+    ALPACA_API_KEY:    'test-key',
+    ALPACA_API_SECRET: 'test-secret',
+    DATABASE_URL:      'postgres://localhost/test',
+    JWT_SECRET:        TEST_JWT_SECRET,
+  };
+  return {
+    ...real,
+    loadConfig: () => real.ConfigSchema.parse(testEnv),
+  };
+});
 
 vi.mock('@alpaca-rl/observability', () => ({
   registry: { contentType: 'text/plain', metrics: async () => '' },
@@ -24,18 +32,19 @@ const freshState = () => ({
   daily_loss_usd: '0',
   max_daily_loss: '1000',
   portfolio_value: '100000',
-  portfolio_value_updated_at: new Date(NOW - 60_000).toISOString(), // 1 minute ago — fresh
+  // 1 minute ago — well within the 3600 s default staleness threshold
+  portfolio_value_updated_at: new Date(NOW - 60_000).toISOString(),
   reason: null,
 });
 
 const mockDb = {
-  getState: vi.fn(),
-  setKillSwitch: vi.fn(),
-  updateDailyLoss: vi.fn(),
-  resetDailyLoss: vi.fn(),
+  getState:            vi.fn(),
+  setKillSwitch:       vi.fn(),
+  updateDailyLoss:     vi.fn(),
+  resetDailyLoss:      vi.fn(),
   updatePortfolioValue: vi.fn(),
 };
-vi.mock('../riskDb', () => ({ RiskDb: vi.fn(() => mockDb) }));
+vi.mock('../riskDb.js', () => ({ RiskDb: vi.fn(() => mockDb) }));
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function makeToken(scope: string) {
@@ -47,26 +56,23 @@ function makeToken(scope: string) {
 }
 
 async function getApp() {
-  // Dynamic import so the vi.mock calls above are applied first.
   const { createApp } = await import('../app.js');
   return createApp();
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── /risk/check route ─────────────────────────────────────────────────────────
 describe('/risk/check route', () => {
   let app: Awaited<ReturnType<typeof getApp>>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mockDb.getState.mockResolvedValue(freshState());
     app = await getApp();
   });
 
-  afterEach(async () => {
-    await app.close();
-  });
+  afterEach(async () => { await app.close(); });
 
   it('allows a valid order when all checks pass', async () => {
-    mockDb.getState.mockResolvedValue(freshState());
     const res = await app.inject({
       method: 'POST',
       url: '/risk/check',
@@ -76,7 +82,7 @@ describe('/risk/check route', () => {
     expect(res.json()).toMatchObject({ allowed: true, symbol: 'AAPL' });
   });
 
-  it('returns 403 when kill switch is active', async () => {
+  it('returns 403 reason=kill_switch_active when kill switch is on', async () => {
     mockDb.getState.mockResolvedValue({ ...freshState(), kill_switch: true });
     const res = await app.inject({
       method: 'POST',
@@ -87,7 +93,7 @@ describe('/risk/check route', () => {
     expect(res.json()).toMatchObject({ allowed: false, reason: 'kill_switch_active' });
   });
 
-  it('returns 503 with reason portfolio_unsynced when portfolio_value is null', async () => {
+  it('returns 503 reason=portfolio_unsynced when portfolio_value is null', async () => {
     mockDb.getState.mockResolvedValue({
       ...freshState(),
       portfolio_value: null,
@@ -102,8 +108,8 @@ describe('/risk/check route', () => {
     expect(res.json()).toMatchObject({ allowed: false, reason: 'portfolio_unsynced' });
   });
 
-  it('returns 503 with reason portfolio_stale when last sync exceeds staleness threshold', async () => {
-    // 2 hours ago — exceeds default 3600 s threshold
+  it('returns 503 reason=portfolio_stale when last sync exceeds staleness threshold', async () => {
+    // 2 hours ago — exceeds the 3600 s default
     const staleTs = new Date(NOW - 2 * 3600 * 1000).toISOString();
     mockDb.getState.mockResolvedValue({
       ...freshState(),
@@ -118,18 +124,18 @@ describe('/risk/check route', () => {
     expect(res.json()).toMatchObject({ allowed: false, reason: 'portfolio_stale' });
   });
 
-  it('returns 403 when notional exceeds max position size', async () => {
-    mockDb.getState.mockResolvedValue(freshState()); // portfolio_value = 100k, limit = 10k
+  it('returns 403 reason=max_position_exceeded when notional too large', async () => {
+    // portfolio = 100k, limit = 10 %, so 15k triggers the gate
     const res = await app.inject({
       method: 'POST',
       url: '/risk/check',
       payload: { symbol: 'AAPL', notional: 15000 },
     });
     expect(res.statusCode).toBe(403);
-    expect(res.json()).toMatchObject({ allowed: false });
+    expect(res.json()).toMatchObject({ allowed: false, reason: 'max_position_exceeded' });
   });
 
-  it('returns 403 when daily loss limit is reached', async () => {
+  it('returns 403 reason=daily_loss_exceeded when daily loss limit is reached', async () => {
     mockDb.getState.mockResolvedValue({
       ...freshState(),
       daily_loss_usd: '1000',
@@ -141,10 +147,10 @@ describe('/risk/check route', () => {
       payload: { symbol: 'AAPL', notional: 5000 },
     });
     expect(res.statusCode).toBe(403);
-    expect(res.json()).toMatchObject({ allowed: false });
+    expect(res.json()).toMatchObject({ allowed: false, reason: 'daily_loss_exceeded' });
   });
 
-  it('returns 400 for invalid body (missing notional)', async () => {
+  it('returns 400 for missing notional', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/risk/check',
@@ -153,7 +159,7 @@ describe('/risk/check route', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('returns 400 for non-positive notional', async () => {
+  it('returns 400 for zero notional (schema rejects non-positive)', async () => {
     const res = await app.inject({
       method: 'POST',
       url: '/risk/check',
@@ -163,24 +169,25 @@ describe('/risk/check route', () => {
   });
 });
 
+// ── Auth: /risk/halt and /risk/resume ─────────────────────────────────────────
 describe('/risk/halt and /risk/resume auth', () => {
   let app: Awaited<ReturnType<typeof getApp>>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    app = await getApp();
     mockDb.getState.mockResolvedValue(freshState());
     mockDb.setKillSwitch.mockResolvedValue(undefined);
+    app = await getApp();
   });
 
   afterEach(async () => { await app.close(); });
 
-  it('returns 401 with no token', async () => {
+  it('returns 401 on /risk/halt with no token', async () => {
     const res = await app.inject({ method: 'POST', url: '/risk/halt', payload: { reason: 'test' } });
     expect(res.statusCode).toBe(401);
   });
 
-  it('returns 403 with wrong scope', async () => {
+  it('returns 403 on /risk/halt with wrong scope', async () => {
     const token = makeToken('risk:read');
     const res = await app.inject({
       method: 'POST',
@@ -191,7 +198,7 @@ describe('/risk/halt and /risk/resume auth', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('activates kill switch with valid token', async () => {
+  it('activates kill switch with valid risk:write token', async () => {
     const token = makeToken('risk:write');
     const res = await app.inject({
       method: 'POST',
@@ -204,24 +211,29 @@ describe('/risk/halt and /risk/resume auth', () => {
   });
 });
 
-describe('/risk/portfolio auth and staleness', () => {
+// ── Auth: /risk/portfolio ─────────────────────────────────────────────────────
+describe('/risk/portfolio auth and validation', () => {
   let app: Awaited<ReturnType<typeof getApp>>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    app = await getApp();
     mockDb.getState.mockResolvedValue(freshState());
-    mockDb.updatePortfolioValue.mockResolvedValue(undefined);
+    mockDb.updatePortfolioValue.mockResolvedValue({ prior: 100000 });
+    app = await getApp();
   });
 
   afterEach(async () => { await app.close(); });
 
   it('returns 401 with no token', async () => {
-    const res = await app.inject({ method: 'POST', url: '/risk/portfolio', payload: { portfolioValue: 50000 } });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/risk/portfolio',
+      payload: { portfolioValue: 50000 },
+    });
     expect(res.statusCode).toBe(401);
   });
 
-  it('updates portfolio value with valid token', async () => {
+  it('updates portfolio value with valid risk:write token', async () => {
     const token = makeToken('risk:write');
     const res = await app.inject({
       method: 'POST',
@@ -230,10 +242,25 @@ describe('/risk/portfolio auth and staleness', () => {
       payload: { portfolioValue: 50000 },
     });
     expect(res.statusCode).toBe(200);
+    // Route passes only portfolioValue (no asOf); riskDb provides the default.
     expect(mockDb.updatePortfolioValue).toHaveBeenCalledWith(50000);
   });
 
-  it('returns 400 for zero portfolio value', async () => {
+  it('returns 200 on first-ever sync (prior=null) without crashing', async () => {
+    mockDb.updatePortfolioValue.mockResolvedValue({ prior: null });
+    const token = makeToken('risk:write');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/risk/portfolio',
+      headers: { authorization: `Bearer ${token}` },
+      payload: { portfolioValue: 50000 },
+    });
+    // The audit log must not throw when prior is null.
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ ok: true, portfolioValue: 50000 });
+  });
+
+  it('returns 400 for zero portfolio value (schema rejects non-positive)', async () => {
     const token = makeToken('risk:write');
     const res = await app.inject({
       method: 'POST',
@@ -256,14 +283,15 @@ describe('/risk/portfolio auth and staleness', () => {
   });
 });
 
+// ── Auth: /risk/reset-daily-loss ──────────────────────────────────────────────
 describe('/risk/reset-daily-loss auth', () => {
   let app: Awaited<ReturnType<typeof getApp>>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    app = await getApp();
     mockDb.getState.mockResolvedValue(freshState());
-    mockDb.resetDailyLoss.mockResolvedValue(undefined);
+    mockDb.resetDailyLoss.mockResolvedValue({ prior: 500 });
+    app = await getApp();
   });
 
   afterEach(async () => { await app.close(); });
@@ -273,7 +301,7 @@ describe('/risk/reset-daily-loss auth', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('resets daily loss with valid token', async () => {
+  it('resets daily loss with valid risk:write token', async () => {
     const token = makeToken('risk:write');
     const res = await app.inject({
       method: 'POST',
@@ -285,6 +313,7 @@ describe('/risk/reset-daily-loss auth', () => {
   });
 });
 
+// ── Schema validation ─────────────────────────────────────────────────────────
 describe('Risk request schema validation', () => {
   it('RiskCheckRequestSchema rejects missing fields', async () => {
     const { RiskCheckRequestSchema } = await import('@alpaca-rl/contracts');
@@ -293,7 +322,7 @@ describe('Risk request schema validation', () => {
     expect(RiskCheckRequestSchema.safeParse({ notional: 100 }).success).toBe(false);
   });
 
-  it('RiskCheckRequestSchema rejects non-positive notional', async () => {
+  it('RiskCheckRequestSchema rejects zero and negative notional', async () => {
     const { RiskCheckRequestSchema } = await import('@alpaca-rl/contracts');
     expect(RiskCheckRequestSchema.safeParse({ symbol: 'AAPL', notional: 0 }).success).toBe(false);
     expect(RiskCheckRequestSchema.safeParse({ symbol: 'AAPL', notional: -100 }).success).toBe(false);

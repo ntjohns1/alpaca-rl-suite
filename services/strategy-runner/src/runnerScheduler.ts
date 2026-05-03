@@ -350,6 +350,11 @@ export class RunnerScheduler {
       });
       if (!checkRes.ok) {
         const reason = (checkRes.body as any)?.reason ?? 'unknown';
+        // 'portfolio_unsynced' / 'portfolio_stale' are operational failures, not
+        // risk decisions — the risk service's PortfolioSyncCron should recover
+        // them within MAX_PORTFOLIO_STALENESS_S. We intentionally do NOT retry
+        // here: the tick cadence already provides a natural retry on the next
+        // interval, and an in-tick retry loop would mask the sync outage in logs.
         const isUnavailable = reason === 'portfolio_unsynced' || reason === 'portfolio_stale';
         this.log.warn({ traceId, symbol: trade.symbol, side: trade.side, reason }, '[runner] risk check blocked');
         runnerOrdersSubmittedTotal.inc({
