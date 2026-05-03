@@ -1,4 +1,4 @@
-"""CLI commands for training workflow."""
+"""CLI commands for training management."""
 import click
 
 from ..client import AlpacaClient, APIError
@@ -11,97 +11,167 @@ client = AlpacaClient()
 
 @click.group()
 def train():
-    """Manage training runs and experiments."""
+    """Manage training jobs on Kaggle."""
 
 
-@train.command("start")
+@train.command("kaggle")
 @click.option("--name", "-n", required=True, help="Training run name")
 @click.option("--symbol", "-s", "symbols", multiple=True, required=True, help="Symbol(s) to train on")
-@click.option("--dataset", "-d", help="Dataset ID to use")
-@click.option("--config", "-c", help="Path to training config file")
-def start_training(name, symbols, dataset, config):
-    """Start a new training run."""
+@click.option("--kernel", required=True, help="Kaggle kernel slug (e.g., username/kernel-name)")
+@click.option("--timesteps", default=100_000, type=int, help="Number of training timesteps")
+@click.option("--output", "-o", default="table", type=click.Choice(["table", "json"]))
+def kaggle_train(name, symbols, kernel, timesteps, output):
+    """Kick off a training run on Kaggle.
+    
+    Example:
+        alpaca-rl train kaggle --name spy-1d-train --symbol SPY --kernel myuser/mykernel --timesteps 100000
+    """
+    payload = {
+        "name": name,
+        "symbols": list(symbols),
+        "kernel": kernel,
+        "timesteps": timesteps,
+    }
+
     try:
-        result = client.train_start(
-            name=name,
-            symbols=list(symbols),
-            dataset_id=dataset,
-            config_path=config
-        )
-        print_success(f"Training run '{name}' started")
-        print_kv(result, title="Training Details")
+        result = client.kaggle_train(payload)
+        if output == "json":
+            print_json(result)
+        else:
+            print_success(f"Training job submitted: {result['jobId']}")
+            print_kv({
+                "Job ID":    result["jobId"],
+                "Status":    result["status"],
+                "Name":      result.get("name", "-"),
+                "Check":     f"alpaca-rl train status {result['jobId']}",
+            })
     except APIError as e:
         print_error(str(e))
         raise SystemExit(1)
 
 
-@train.command("list")
-@click.option("--status", type=click.Choice(["pending", "running", "completed", "failed"]))
-@click.option("--pending-approval", is_flag=True, help="Show only runs pending approval")
+@train.command("start")
+@click.option("--name", "-n", required=True, help="Training run name")
+@click.option("--symbol", "-s", "symbols", multiple=True, required=True, help="Symbol(s) to train on")
+@click.option("--kernel", help="Kaggle kernel slug (e.g., username/kernel-name)")
+@click.option("--timesteps", default=100_000, type=int, help="Number of training timesteps")
 @click.option("--output", "-o", default="table", type=click.Choice(["table", "json"]))
-def list_runs(status, pending_approval, output):
-    """List training runs."""
+def start_training(name, symbols, kernel, timesteps, output):
+    """Start a training job (alias for 'kaggle' command).
+    
+    Example:
+        alpaca-rl train start --name spy-1d-train --symbol SPY --symbol AAPL
+    """
+    payload = {
+        "name": name,
+        "symbols": list(symbols),
+        "timesteps": timesteps,
+    }
+    if kernel:
+        payload["kernel"] = kernel
+
     try:
-        filters = {}
-        if status:
-            filters["status"] = status
-        if pending_approval:
-            filters["pending_approval"] = True
-        
-        runs = client.train_list(**filters)
+        result = client.kaggle_train(payload)
         if output == "json":
-            print_json(runs)
+            print_json(result)
         else:
-            print_table(
-                runs,
-                columns=["id", "name", "status", "symbols", "created_at", "approved"],
-                title=f"Training Runs ({len(runs)} results)",
-            )
+            print_success(f"Training job submitted: {result['jobId']}")
+            print_kv({
+                "Job ID":    result["jobId"],
+                "Status":    result["status"],
+                "Name":      result.get("name", "-"),
+                "Check":     f"alpaca-rl train status {result['jobId']}",
+            })
     except APIError as e:
         print_error(str(e))
         raise SystemExit(1)
 
 
 @train.command("status")
-@click.argument("run_id")
+@click.argument("job_id")
 @click.option("--output", "-o", default="table", type=click.Choice(["table", "json"]))
-def training_status(run_id, output):
-    """Get status of a training run."""
+def job_status(job_id, output):
+    """Poll status of a training job.
+    
+    Example:
+        alpaca-rl train status <jobId>
+    """
     try:
-        status = client.train_status(run_id)
+        result = client.kaggle_get_job(job_id)
         if output == "json":
-            print_json(status)
+            print_json(result)
         else:
-            print_kv(status, title=f"Run {run_id} Status")
+            print_kv({
+                "Job ID":          result["id"],
+                "Name":            result.get("name", "-"),
+                "Status":          result["status"],
+                "Approval Status": result.get("approval_status", "-"),
+                "Error":           result.get("error") or "-",
+            }, title=f"Training Job: {job_id}")
     except APIError as e:
         print_error(str(e))
         raise SystemExit(1)
 
 
-@train.command("logs")
-@click.argument("run_id")
-@click.option("--follow", "-f", is_flag=True, help="Follow logs in real-time")
-@click.option("--lines", "-n", default=50, help="Number of lines to show")
-def training_logs(run_id, follow, lines):
-    """Get logs for a training run."""
+@train.command("list")
+@click.option("--pending-approval", is_flag=True, help="Show only jobs pending approval")
+@click.option("--output", "-o", default="table", type=click.Choice(["table", "json"]))
+def list_jobs(pending_approval, output):
+    """List training jobs."""
     try:
-        logs = client.train_logs(run_id, follow=follow, lines=lines)
-        click.echo(logs)
+        if pending_approval:
+            results = client.kaggle_list_jobs(status="pending_approval", approval_status="pending")
+        else:
+            results = client.kaggle_list_jobs()
+        
+        if output == "json":
+            print_json(results)
+        else:
+            print_table(
+                results,
+                columns=["id", "name", "status", "approval_status", "created_at"],
+                title=f"Training Jobs ({len(results)} results)",
+            )
     except APIError as e:
         print_error(str(e))
         raise SystemExit(1)
 
 
 @train.command("cancel")
-@click.argument("run_id")
-@click.option("--yes", is_flag=True, help="Skip confirmation")
-def cancel_training(run_id, yes):
-    """Cancel a running training run."""
-    if not yes:
-        click.confirm(f"Cancel training run {run_id}?", abort=True)
+@click.argument("job_id")
+@click.option("--output", "-o", default="table", type=click.Choice(["table", "json"]))
+def cancel_job(job_id, output):
+    """Cancel a training job."""
     try:
-        client.train_cancel(run_id)
-        print_success(f"Training run {run_id} cancelled")
+        result = client.kaggle_cancel_job(job_id)
+        if output == "json":
+            print_json(result)
+        else:
+            print_success(f"Job {job_id} cancelled")
+            print_kv({
+                "Job ID": result["jobId"],
+                "Status": result["status"],
+            })
+    except APIError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+
+
+@train.command("quota")
+@click.option("--output", "-o", default="table", type=click.Choice(["table", "json"]))
+def show_quota(output):
+    """Show Kaggle GPU quota usage."""
+    try:
+        result = client.kaggle_quota()
+        if output == "json":
+            print_json(result)
+        else:
+            print_kv({
+                "Username":      result.get("username", "-"),
+                "GPU Quota":     f"{result.get('gpuQuota', 0)} hours/week",
+                "GPU Used":      f"{result.get('gpuUsed', 0)} hours",
+                "GPU Remaining": f"{result.get('gpuRemaining', 0)} hours",
+            }, title="Kaggle GPU Quota")
     except APIError as e:
         print_error(str(e))
         raise SystemExit(1)
