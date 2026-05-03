@@ -143,6 +143,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       AUTH_PORT: "3001"
     ports:
@@ -381,10 +382,9 @@ services:
       DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
       NATS_URL: nats://nats:4222
       JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       API_GATEWAY_PORT: "3000"
+      # Note: No ALPACA credentials — api-gateway proxies, doesn't trade
     ports:
       - "3000:3000"
     networks:
@@ -421,6 +421,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       WEB_UI_PORT: "3200"
     ports:
       - "3200:3200"
@@ -456,6 +457,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       DASHBOARD_PORT: "8020"
     ports:
       - "8020:8020"
@@ -492,8 +494,10 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       FEATURE_BUILDER_PORT: "8002"
+      # Note: No ALPACA credentials — feature-builder doesn't trade
     ports:
       - "8002:8002"
     networks:
@@ -530,6 +534,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       DATASET_BUILDER_PORT: "8003"
     ports:
@@ -568,6 +573,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       BACKTEST_PORT: "8001"
     ports:
@@ -606,6 +612,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       RL_TRAIN_PORT: "8004"
     ports:
@@ -714,6 +721,7 @@ services:
       KEYCLOAK_URL: https://auth.nelsonjohns.com
       KEYCLOAK_REALM: alpaca-rl-suite
       KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ENVIRONMENT: production
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       KAGGLE_ORCHESTRATOR_PORT: "8011"
     ports:

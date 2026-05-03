@@ -6,12 +6,51 @@ from ..utils.formatting import (
     print_json, print_table, print_success, print_error, print_kv
 )
 
-client = AlpacaClient()
+_client = None
+
+
+def _get_client() -> AlpacaClient:
+    """Lazy client initialization to avoid expensive setup on `alpaca-rl --help`."""
+    global _client
+    if _client is None:
+        _client = AlpacaClient()
+    return _client
 
 
 @click.group()
 def train():
     """Manage training jobs on Kaggle."""
+
+
+def _submit_training_job(name, symbols, kernel, timesteps, output):
+    """Shared logic for submitting a training job."""
+    payload = {
+        "name": name,
+        "symbols": list(symbols),
+        "timesteps": timesteps,
+    }
+    if kernel:
+        payload["kernel"] = kernel
+
+    try:
+        result = _get_client().kaggle_train(payload)
+        if output == "json":
+            print_json(result)
+        else:
+            job_id = result.get("jobId")
+            if not job_id:
+                print_error("Server returned success but no job ID")
+                raise SystemExit(1)
+            print_success(f"Training job submitted: {job_id}")
+            print_kv({
+                "Job ID":    job_id,
+                "Status":    result.get("status", "-"),
+                "Name":      result.get("name", "-"),
+                "Check":     f"alpaca-rl train status {job_id}",
+            })
+    except APIError as e:
+        print_error(str(e))
+        raise SystemExit(1)
 
 
 @train.command("kaggle")
@@ -26,28 +65,7 @@ def kaggle_train(name, symbols, kernel, timesteps, output):
     Example:
         alpaca-rl train kaggle --name spy-1d-train --symbol SPY --kernel myuser/mykernel --timesteps 100000
     """
-    payload = {
-        "name": name,
-        "symbols": list(symbols),
-        "kernel": kernel,
-        "timesteps": timesteps,
-    }
-
-    try:
-        result = client.kaggle_train(payload)
-        if output == "json":
-            print_json(result)
-        else:
-            print_success(f"Training job submitted: {result['jobId']}")
-            print_kv({
-                "Job ID":    result["jobId"],
-                "Status":    result["status"],
-                "Name":      result.get("name", "-"),
-                "Check":     f"alpaca-rl train status {result['jobId']}",
-            })
-    except APIError as e:
-        print_error(str(e))
-        raise SystemExit(1)
+    _submit_training_job(name, symbols, kernel, timesteps, output)
 
 
 @train.command("start")
@@ -62,29 +80,7 @@ def start_training(name, symbols, kernel, timesteps, output):
     Example:
         alpaca-rl train start --name spy-1d-train --symbol SPY --symbol AAPL
     """
-    payload = {
-        "name": name,
-        "symbols": list(symbols),
-        "timesteps": timesteps,
-    }
-    if kernel:
-        payload["kernel"] = kernel
-
-    try:
-        result = client.kaggle_train(payload)
-        if output == "json":
-            print_json(result)
-        else:
-            print_success(f"Training job submitted: {result['jobId']}")
-            print_kv({
-                "Job ID":    result["jobId"],
-                "Status":    result["status"],
-                "Name":      result.get("name", "-"),
-                "Check":     f"alpaca-rl train status {result['jobId']}",
-            })
-    except APIError as e:
-        print_error(str(e))
-        raise SystemExit(1)
+    _submit_training_job(name, symbols, kernel, timesteps, output)
 
 
 @train.command("status")
@@ -97,14 +93,14 @@ def job_status(job_id, output):
         alpaca-rl train status <jobId>
     """
     try:
-        result = client.kaggle_get_job(job_id)
+        result = _get_client().kaggle_get_job(job_id)
         if output == "json":
             print_json(result)
         else:
             print_kv({
-                "Job ID":          result["id"],
+                "Job ID":          result.get("id", "-"),
                 "Name":            result.get("name", "-"),
-                "Status":          result["status"],
+                "Status":          result.get("status", "-"),
                 "Approval Status": result.get("approval_status", "-"),
                 "Error":           result.get("error") or "-",
             }, title=f"Training Job: {job_id}")
@@ -120,9 +116,9 @@ def list_jobs(pending_approval, output):
     """List training jobs."""
     try:
         if pending_approval:
-            results = client.kaggle_list_jobs(status="pending_approval", approval_status="pending")
+            results = _get_client().kaggle_list_jobs(status="pending_approval", approval_status="pending")
         else:
-            results = client.kaggle_list_jobs()
+            results = _get_client().kaggle_list_jobs()
         
         if output == "json":
             print_json(results)
@@ -143,14 +139,14 @@ def list_jobs(pending_approval, output):
 def cancel_job(job_id, output):
     """Cancel a training job."""
     try:
-        result = client.kaggle_cancel_job(job_id)
+        result = _get_client().kaggle_cancel_job(job_id)
         if output == "json":
             print_json(result)
         else:
             print_success(f"Job {job_id} cancelled")
             print_kv({
-                "Job ID": result["jobId"],
-                "Status": result["status"],
+                "Job ID": result.get("jobId", "-"),
+                "Status": result.get("status", "-"),
             })
     except APIError as e:
         print_error(str(e))
@@ -162,7 +158,7 @@ def cancel_job(job_id, output):
 def show_quota(output):
     """Show Kaggle GPU quota usage."""
     try:
-        result = client.kaggle_quota()
+        result = _get_client().kaggle_quota()
         if output == "json":
             print_json(result)
         else:

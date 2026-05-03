@@ -193,17 +193,37 @@ _AUTH_DISABLED_STUB = {
     "sub": "integration-test",
     "preferred_username": "integration-test",
     "email": "integration-test@localhost",
-    "realm_access": {"roles": []},
+    "realm_access": {"roles": ["user", "trader", "admin"]},  # Grant common roles for integration tests
     "resource_access": {},
 }
+
+
+_ALLOWED_AUTH_BYPASS_ENVS = frozenset(("test", "development", "local"))
 
 
 def make_auth_dependencies(auth: KeycloakAuth):
     """Build FastAPI dependencies bound to a KeycloakAuth instance."""
 
-    _auth_disabled = os.environ.get("AUTH_DISABLED", "").lower() == "true"
+    _auth_disabled_flag = os.environ.get("AUTH_DISABLED", "").lower() == "true"
+    _environment = os.environ.get("ENVIRONMENT", "").lower() or "production"
+
+    # Require BOTH AUTH_DISABLED=true AND a recognised non-production
+    # environment to prevent accidental production bypass.
+    _auth_disabled = _auth_disabled_flag and _environment in _ALLOWED_AUTH_BYPASS_ENVS
+
+    if _auth_disabled_flag and not _auth_disabled:
+        log.critical(
+            "AUTH_DISABLED=true ignored in ENVIRONMENT=%s. "
+            "Auth bypass only allowed in %s environments.",
+            _environment,
+            "/".join(sorted(_ALLOWED_AUTH_BYPASS_ENVS)),
+        )
+
     if _auth_disabled:
-        log.warning("AUTH_DISABLED=true — all auth checks bypassed (integration test mode only)")
+        log.warning(
+            "AUTH_DISABLED=true in ENVIRONMENT=%s — all auth checks bypassed (integration test mode only)",
+            _environment
+        )
 
     async def get_current_user(
         request: Request,

@@ -29,6 +29,11 @@ async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
   try {
     // Pin the algorithm — without this, jsonwebtoken accepts `alg: none` and
     // any other algo. JWT_SECRET is HMAC, so HS256 is the only valid choice.
+    //
+    // TODO: SECURITY DEBT — Symmetric JWT (HS256) shared across all services
+    // means any compromised service can forge tokens for all others. Migrate to
+    // asymmetric verification (RS256/ES256) using Keycloak's JWKS endpoint.
+    // Lower urgency for paper trading, but required before live trading.
     jwt.verify(auth.slice(7), config.JWT_SECRET, { algorithms: ['HS256'] });
   } catch {
     return reply.status(401).send({ error: 'invalid token' });
@@ -82,14 +87,16 @@ async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   app.log.info({ signal }, 'shutdown initiated');
+  let exitCode = 0;
   try {
     await scheduler.stop();   // awaits any in-flight tick
     await app.close();        // drain HTTP
     await otelSdk.shutdown(); // flush traces last
   } catch (err) {
     app.log.error({ err: String(err) }, 'error during shutdown');
+    exitCode = 1;  // Signal failure to container orchestrator
   } finally {
-    process.exit(0);
+    process.exit(exitCode);
   }
 }
 

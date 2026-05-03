@@ -6,7 +6,15 @@ from ..utils.formatting import (
     print_json, print_table, print_success, print_error, print_kv
 )
 
-client = AlpacaClient()
+_client = None
+
+
+def _get_client() -> AlpacaClient:
+    """Lazy client initialization to avoid expensive setup on `alpaca-rl --help`."""
+    global _client
+    if _client is None:
+        _client = AlpacaClient()
+    return _client
 
 
 @click.group()
@@ -19,7 +27,7 @@ def dataset():
 def list_datasets(output):
     """List all datasets."""
     try:
-        datasets = client.dataset_list()
+        datasets = _get_client().dataset_list()
         if output == "json":
             print_json(datasets)
         else:
@@ -42,7 +50,7 @@ def list_datasets(output):
 def export_dataset(symbols, fmt, start, end, output):
     """Export feature data for given symbols to a file."""
     try:
-        data = client.dataset_export(list(symbols), format=fmt, start_date=start, end_date=end)
+        data = _get_client().dataset_export(list(symbols), format=fmt, start_date=start, end_date=end)
         if not isinstance(data, bytes):
             print_error("Unexpected non-binary response from export endpoint")
             raise SystemExit(1)
@@ -63,7 +71,7 @@ def export_dataset(symbols, fmt, start, end, output):
 def preview_dataset(symbols, start, end, rows, output):
     """Preview feature data for given symbols."""
     try:
-        result = client.dataset_preview(list(symbols), start_date=start, end_date=end, rows=rows)
+        result = _get_client().dataset_preview(list(symbols), start_date=start, end_date=end, rows=rows)
         if output == "json":
             print_json(result)
         else:
@@ -83,7 +91,7 @@ def delete_dataset(dataset_id, yes):
     if not yes:
         click.confirm(f"Delete dataset {dataset_id}?", abort=True)
     try:
-        client.dataset_delete(dataset_id)
+        _get_client().dataset_delete(dataset_id)
         print_success(f"Dataset {dataset_id} deleted")
     except APIError as e:
         print_error(str(e))

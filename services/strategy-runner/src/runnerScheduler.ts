@@ -62,6 +62,7 @@ export class RunnerScheduler {
   private _symbols: string[];
   private readonly tickIntervalMs: number;
   private readonly fetchTimeoutMs: number;
+  private readonly minOrderNotional: number;
   private readonly log: Logger;
 
   constructor(private config: Config, log: Logger) {
@@ -69,6 +70,15 @@ export class RunnerScheduler {
     this._symbols = parseSymbols(process.env.TRADING_SYMBOLS);
     this.tickIntervalMs = parsePositiveInt(process.env.TICK_INTERVAL_MS, 60_000);
     this.fetchTimeoutMs = parsePositiveInt(process.env.RUNNER_FETCH_TIMEOUT_MS, 5_000);
+    // Floor for rebalance orders. Market value fluctuates by a few dollars
+    // between ticks from price movement alone — without a floor, every tick
+    // generates tiny $1-$3 "rebalance" orders that are noise, not signal.
+    // Alpaca requires >= $1 notional for fractional shares.
+    const rawMinNotional = parsePositiveFloat(process.env.MIN_ORDER_NOTIONAL_USD, 5);
+    if (rawMinNotional < 1) {
+      throw new Error('MIN_ORDER_NOTIONAL_USD must be >= 1 (broker minimum for fractional shares)');
+    }
+    this.minOrderNotional = rawMinNotional;
   }
 
   isRunning() { return this.running; }
@@ -96,21 +106,25 @@ export class RunnerScheduler {
    * is already running, so the HTTP handler can tell the caller their request
    * was a no-op (otherwise an operator forcing a tick can't distinguish "ran"
    * from "skipped due to overlap").
+   * 
+   * Race-safe: the guard and assignment happen atomically in runTick().
    */
   async tick(): Promise<{ executed: boolean; reason?: 'overlap' }> {
-    if (this.inFlight) {
-      this.log.warn({}, '[runner] tick skipped: previous tick still running');
-      runnerTicksTotal.inc({ outcome: 'skipped_overlap' });
-      return { executed: false, reason: 'overlap' };
-    }
-    await this.runTick();
+    const p = this.runTick();
+    if (p === null) return { executed: false, reason: 'overlap' };
+    await p;
     return { executed: true };
   }
 
-  private runTick(): Promise<void> {
-    if (this.inFlight) {
+  private runTick(): Promise<void> | null {
+    // Atomic check-and-set: if already in flight, return null immediately.
+    // In Node's single-threaded event loop the synchronous path from the
+    // guard through the assignment is uninterruptible, so two concurrent
+    // HTTP /runner/tick calls cannot both pass the check.
+    if (this.inFlight !== null) {
+      this.log.warn({}, '[runner] tick skipped: previous tick still running');
       runnerTicksTotal.inc({ outcome: 'skipped_overlap' });
-      return Promise.resolve();
+      return null;
     }
     const p = this.doTick().finally(() => { this.inFlight = null; });
     this.inFlight = p;
@@ -228,7 +242,12 @@ export class RunnerScheduler {
       const map = new Map<string, number>();
       for (const p of arr.data) {
         const mv = Number(p.market_value ?? 0);
-        if (Number.isFinite(mv)) map.set(p.symbol, mv);
+        if (Number.isFinite(mv)) {
+          // Accumulate in case portfolio service returns multiple entries for
+          // the same symbol (e.g., from partial fills or multi-strategy).
+          const existing = map.get(p.symbol) ?? 0;
+          map.set(p.symbol, existing + mv);
+        }
       }
       return map;
     } catch (err) {
@@ -300,14 +319,14 @@ export class RunnerScheduler {
       const currentMv = positions.get(s.symbol) ?? 0;
 
       if (s.action === 2) {
-        // LONG: bring position up to `target`. Skip if already at/above.
         const delta = target - currentMv;
-        if (delta > 1) trades.push({ symbol: s.symbol, side: 'buy', notional: round2(delta) });
+        if (delta > this.minOrderNotional) {
+          trades.push({ symbol: s.symbol, side: 'buy', notional: round2(delta) });
+        }
       } else if (s.action === 0) {
-        // SHORT (treated as exit-long): close any long position. We do NOT open
-        // margin shorts here — that requires deliberate broker config.
-        // See runnerScheduler.ts comment for rationale.
-        if (currentMv > 1) trades.push({ symbol: s.symbol, side: 'sell', notional: round2(currentMv) });
+        if (currentMv > this.minOrderNotional) {
+          trades.push({ symbol: s.symbol, side: 'sell', notional: round2(currentMv) });
+        }
       }
       // action=1 (HOLD) → no trade
     }
@@ -387,7 +406,18 @@ export class RunnerScheduler {
         signal: controller.signal,
       });
       let body: unknown = null;
-      try { body = await res.json(); } catch { /* non-JSON or empty body */ }
+      try { 
+        body = await res.json(); 
+      } catch (parseErr) { 
+        // Warn if a 2xx response has unparseable body — likely a misconfigured
+        // reverse proxy returning HTML instead of JSON.
+        if (res.ok) {
+          this.log.warn(
+            { traceId: opts.traceId, url, status: res.status, parseErr: String(parseErr) },
+            '[runner] 2xx response with non-JSON body — possible proxy misconfiguration'
+          );
+        }
+      }
       return { ok: res.ok, status: res.status, body };
     } finally {
       clearTimeout(timer);
@@ -411,11 +441,18 @@ function randomTraceId(): string {
 }
 
 function round2(n: number): number {
-  return Math.round(n * 100) / 100;
+  // EPSILON nudge avoids binary-float midpoint rounding errors.
+  return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
 function parsePositiveInt(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
   const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function parsePositiveFloat(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const n = Number.parseFloat(raw);
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
