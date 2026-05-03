@@ -7,6 +7,7 @@ const ConfigSchema = z.object({
   ALPACA_BASE_URL: z.string().url().default('https://paper-api.alpaca.markets'),
   ALPACA_DATA_URL: z.string().url().default('https://data.alpaca.markets'),
   ALPACA_STREAM_URL: z.string().default('wss://stream.data.alpaca.markets'),
+  ALPACA_FEED: z.enum(['iex', 'sip']).default('iex'),
 
   // Database
   DATABASE_URL: z.string().min(1),
@@ -47,6 +48,9 @@ const ConfigSchema = z.object({
 
   // Trading mode
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),
+
+  // Streaming symbols (comma-separated, e.g. "AAPL,MSFT,TSLA")
+  STREAM_SYMBOLS: z.string().optional(),
 
   // Observability
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().default('http://localhost:4318'),
