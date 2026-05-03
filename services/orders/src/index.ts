@@ -1,5 +1,6 @@
 import './tracing';
-import Fastify from 'fastify';
+import Fastify, { FastifyReply, FastifyRequest } from 'fastify';
+import jwt from 'jsonwebtoken';
 import { loadConfig } from '@alpaca-rl/config';
 import { SubmitOrderRequestSchema } from '@alpaca-rl/contracts';
 import { registry } from '@alpaca-rl/observability';
@@ -12,7 +13,25 @@ const app = Fastify({ logger: true });
 const db = new OrdersDb(config);
 const svc = new OrdersService(config, db);
 
-app.post('/orders', async (req, reply) => {
+async function requireAuth(req: FastifyRequest, reply: FastifyReply) {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith('Bearer ')) {
+    return reply.status(401).send({ error: 'missing bearer token' });
+  }
+  try {
+    jwt.verify(auth.slice(7), config.JWT_SECRET, { algorithms: ['HS256'] });
+  } catch {
+    return reply.status(401).send({ error: 'invalid token' });
+  }
+}
+
+// Static routes must be registered before parametric routes to avoid /orders/health
+// being matched by /orders/:id
+app.get('/orders/health', async (_req, reply) => {
+  reply.send({ status: 'ok', service: 'orders' });
+});
+
+app.post('/orders', { preHandler: requireAuth }, async (req, reply) => {
   const body = SubmitOrderRequestSchema.safeParse(req.body);
   if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
   const traceId = (req as any).traceId ?? uuidv4();
@@ -31,13 +50,9 @@ app.get('/orders/:id', async (req: any, reply) => {
   return reply.send(row);
 });
 
-app.delete('/orders/:id', async (req: any, reply) => {
+app.delete('/orders/:id', { preHandler: requireAuth }, async (req: any, reply) => {
   await svc.cancelOrder(req.params.id);
   return reply.status(204).send();
-});
-
-app.get('/orders/health', async (_req, reply) => {
-  reply.send({ status: 'ok', service: 'orders' });
 });
 
 app.get('/metrics', async (_req, reply) => {

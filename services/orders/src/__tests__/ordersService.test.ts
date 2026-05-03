@@ -56,7 +56,7 @@ describe('OrdersService', () => {
     expect(result.status).toBe('accepted');
   });
 
-  it('marks order as failed when adapter returns non-ok', async () => {
+  it('does not write to DB when adapter returns non-ok', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: false,
       text: async () => 'insufficient funds',
@@ -73,7 +73,8 @@ describe('OrdersService', () => {
       }),
     ).rejects.toThrow('Alpaca order failed');
 
-    expect(mockDb.updateOrderStatus).toHaveBeenCalledWith('idem-2', { status: 'failed' });
+    expect(mockDb.createOrder).not.toHaveBeenCalled();
+    expect(mockDb.updateOrderStatus).not.toHaveBeenCalled();
   });
 
   it('cancels an order via adapter', async () => {
@@ -92,5 +93,21 @@ describe('OrdersService', () => {
   it('throws when cancelling a non-existent order', async () => {
     mockDb.getOrder.mockResolvedValue(null);
     await expect(svc.cancelOrder('bad-id')).rejects.toThrow('Order not found');
+  });
+
+  it('throws and does not update status when adapter rejects cancel', async () => {
+    mockDb.getOrder.mockResolvedValue({
+      id: 'local-order-1',
+      idempotency_key: 'idem-1',
+      alpaca_order_id: 'alpaca-order-1',
+    });
+
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      text: async () => 'order already filled',
+    } as any);
+
+    await expect(svc.cancelOrder('local-order-1')).rejects.toThrow('Alpaca cancel failed');
+    expect(mockDb.updateOrderStatus).not.toHaveBeenCalled();
   });
 });
