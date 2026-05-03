@@ -171,6 +171,20 @@ class AlpacaClient:
     def dataset_delete(self, dataset_id: str) -> None:
         return self.delete(f"{self.cfg.DATASET_URL}/datasets/{dataset_id}")
 
+    def dataset_build(self, name: str, symbols: list, start_date: str, end_date: str,
+                      n_splits: int, train_frac: float, feature_version: Optional[str] = None) -> dict:
+        payload = {
+            "name": name,
+            "symbols": symbols,
+            "start_date": start_date,
+            "end_date": end_date,
+            "n_splits": n_splits,
+            "train_frac": train_frac,
+        }
+        if feature_version:
+            payload["feature_version"] = feature_version
+        return self.post(f"{self.cfg.DATASET_URL}/datasets/build", json=payload)
+
     # ─────────────────────────────────────────
     # System
     # ─────────────────────────────────────────
