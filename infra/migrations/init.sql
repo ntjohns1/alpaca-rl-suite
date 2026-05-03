@@ -168,17 +168,71 @@ CREATE INDEX IF NOT EXISTS idx_policy_bundle_promoted ON policy_bundle (promoted
 -- ─────────────────────────────────────────
 -- Risk / kill switch state
 -- ─────────────────────────────────────────
+-- Singleton table: id is fixed at 1. The CHECK constraint and explicit id in
+-- INSERT prevent drift from container restarts generating extra rows (which
+-- caused every UPDATE to touch all rows while getState() only read the first).
 CREATE TABLE IF NOT EXISTS risk_state (
-    id              SERIAL          PRIMARY KEY,
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    kill_switch     BOOLEAN         NOT NULL DEFAULT FALSE,
-    daily_loss_usd  NUMERIC(18,2)   NOT NULL DEFAULT 0,
-    max_daily_loss  NUMERIC(18,2)   NOT NULL DEFAULT 1000,
-    reason          TEXT
+    id                          INTEGER         PRIMARY KEY CHECK (id = 1),
+    updated_at                  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    kill_switch                 BOOLEAN         NOT NULL DEFAULT FALSE,
+    daily_loss_usd              NUMERIC(18,2)   NOT NULL DEFAULT 0,
+    max_daily_loss              NUMERIC(18,2)   NOT NULL DEFAULT 1000,
+    portfolio_value             NUMERIC(18,2),
+    portfolio_value_updated_at  TIMESTAMPTZ,
+    reason                      TEXT
 );
-INSERT INTO risk_state (kill_switch, daily_loss_usd, max_daily_loss)
-VALUES (FALSE, 0, 1000)
-ON CONFLICT DO NOTHING;
+-- Idempotent column adds for environments where init.sql ran before these columns existed.
+-- The portfolio_value ADD can be removed once all environments have been migrated past
+-- the first ALPCA-8 deploy (approx. 2026-06-01).
+ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS portfolio_value NUMERIC(18,2);
+ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS portfolio_value_updated_at TIMESTAMPTZ;
+
+-- ── Migration: converge existing multi-row environments to the singleton ──────
+-- CREATE TABLE above is a no-op on existing databases that have the old SERIAL
+-- primary key schema. The following block cleans up any drift from container
+-- restarts that generated extra rows under the old `ON CONFLICT DO NOTHING`
+-- (which had no conflict target, so SERIAL-generated ids never conflicted).
+DO $$
+BEGIN
+  -- Step 1: Ensure a row with id=1 exists. If the canonical row has a
+  -- different id (e.g. id=2 from a fresh container), copy its state into id=1.
+  -- Use ORDER BY updated_at DESC, not id ASC: on a drifted database the
+  -- lowest-id row may be the stale initial seed while higher-id rows carry
+  -- the actually-current state (they were being mutated on every UPDATE).
+  IF NOT EXISTS (SELECT 1 FROM risk_state WHERE id = 1) THEN
+    INSERT INTO risk_state
+      (id, kill_switch, daily_loss_usd, max_daily_loss,
+       portfolio_value, portfolio_value_updated_at, reason)
+    SELECT 1, kill_switch, daily_loss_usd, max_daily_loss,
+           portfolio_value, portfolio_value_updated_at, reason
+    FROM   risk_state
+    ORDER  BY updated_at DESC
+    LIMIT  1;
+  END IF;
+
+  -- Step 2: Remove every row that is not the singleton.
+  DELETE FROM risk_state WHERE id <> 1;
+
+  -- Step 3: Add the CHECK constraint if it does not already exist.
+  -- The DELETE above guarantees no row can violate CHECK (id = 1) at this point.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE  conname = 'risk_state_singleton'
+    AND    conrelid = 'risk_state'::regclass
+  ) THEN
+    EXECUTE 'ALTER TABLE risk_state ADD CONSTRAINT risk_state_singleton CHECK (id = 1)';
+  END IF;
+END $$;
+
+-- Remove the SERIAL sequence and its column default so that a future INSERT
+-- without an explicit id cannot silently generate a value and violate CHECK (id=1).
+-- Idempotent on fresh databases (the sequence may not exist).
+ALTER TABLE risk_state ALTER COLUMN id DROP DEFAULT;
+DROP SEQUENCE IF EXISTS risk_state_id_seq;
+
+INSERT INTO risk_state (id, kill_switch, daily_loss_usd, max_daily_loss)
+VALUES (1, FALSE, 0, 1000)
+ON CONFLICT (id) DO NOTHING;
 
 -- ─────────────────────────────────────────
 -- Backtest reports

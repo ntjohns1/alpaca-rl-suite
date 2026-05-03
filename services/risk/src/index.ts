@@ -1,77 +1,50 @@
 import './tracing';
-import Fastify from 'fastify';
 import { loadConfig } from '@alpaca-rl/config';
-import { HaltRequestSchema } from '@alpaca-rl/contracts';
-import { registry } from '@alpaca-rl/observability';
-import { RiskDb } from './riskDb';
+import { RiskDb } from './riskDb.js';
+import { createApp } from './app.js';
+import { PortfolioSyncCron } from './portfolioSync.js';
 
 const config = loadConfig();
-const app = Fastify({ logger: true });
+
+// Guard against misconfigured intervals: if the sync interval is >= half the
+// staleness threshold, the staleness gate will fire between syncs.
+const { RISK_PORTFOLIO_SYNC_INTERVAL_MS: syncMs, MAX_PORTFOLIO_STALENESS_S: stalenessS } = config;
+if (syncMs * 2 >= stalenessS * 1000) {
+  throw new Error(
+    `RISK_PORTFOLIO_SYNC_INTERVAL_MS (${syncMs} ms) must be < half of ` +
+    `MAX_PORTFOLIO_STALENESS_S (${stalenessS} s = ${stalenessS * 1000} ms). ` +
+    `Reduce the sync interval or increase the staleness threshold.`,
+  );
+}
+
 const db = new RiskDb(config);
+const app = createApp(config, db);
+const cron = new PortfolioSyncCron(config, db, app.log);
 
-// ── State ────────────────────────────────────────────────────────────
-app.get('/risk/state', async (_req, reply) => {
-  const state = await db.getState();
-  return reply.send(state);
-});
+const SHUTDOWN_TIMEOUT_MS = 10_000;
 
-// ── Kill switch ───────────────────────────────────────────────────────
-app.post('/risk/halt', async (req, reply) => {
-  const body = HaltRequestSchema.safeParse(req.body);
-  if (!body.success) return reply.status(400).send({ error: body.error.flatten() });
-  await db.setKillSwitch(true, body.data.reason);
-  app.log.warn({ reason: body.data.reason }, 'KILL SWITCH ACTIVATED');
-  return reply.send({ killSwitch: true, reason: body.data.reason });
-});
+async function shutdown(signal: string) {
+  app.log.info({ signal }, 'shutdown starting');
+  cron.stop();
 
-app.post('/risk/resume', async (_req, reply) => {
-  await db.setKillSwitch(false, null);
-  app.log.info('Kill switch cleared');
-  return reply.send({ killSwitch: false });
-});
+  // Hard-kill timer: if close() hangs (stuck request or deadlocked query),
+  // Kubernetes will SIGKILL after its own grace period anyway — this ensures
+  // we flush logs and exit cleanly on our own schedule first.
+  const killer = setTimeout(() => {
+    app.log.error('shutdown timed out — force exit');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
 
-// ── Pre-order risk check ──────────────────────────────────────────────
-app.post('/risk/check', async (req: any, reply) => {
-  const state = await db.getState();
+  await app.close();  // drains in-flight requests
+  await db.close();   // releases pg pool
+  clearTimeout(killer);
+  process.exit(0);
+}
 
-  if (state.kill_switch) {
-    return reply.status(403).send({ allowed: false, reason: 'Kill switch active' });
-  }
-
-  const { notional = 0, symbol } = req.body ?? {};
-  if (Math.abs(notional) > config.MAX_POSITION_SIZE_PCT * (state.portfolio_value ?? 100000)) {
-    return reply.status(403).send({
-      allowed: false,
-      reason: `Order size exceeds max position size (${config.MAX_POSITION_SIZE_PCT * 100}%)`,
-    });
-  }
-
-  if (state.daily_loss_usd >= state.max_daily_loss) {
-    return reply.status(403).send({
-      allowed: false,
-      reason: `Daily loss limit reached ($${state.daily_loss_usd} / $${state.max_daily_loss})`,
-    });
-  }
-
-  return reply.send({ allowed: true, symbol });
-});
-
-// ── Update daily P&L ─────────────────────────────────────────────────
-app.post('/risk/daily-pl', async (req: any, reply) => {
-  const { dailyLoss } = req.body ?? {};
-  await db.updateDailyLoss(dailyLoss ?? 0);
-  return reply.send({ ok: true });
-});
-
-app.get('/risk/health', async (_req, reply) => {
-  reply.send({ status: 'ok', service: 'risk' });
-});
-
-app.get('/metrics', async (_req, reply) => {
-  reply.header('Content-Type', registry.contentType);
-  return reply.send(await registry.metrics());
-});
+process.on('SIGTERM', () => { shutdown('SIGTERM').catch((err) => { console.error(err); process.exit(1); }); });
+process.on('SIGINT',  () => { shutdown('SIGINT').catch((err)  => { console.error(err); process.exit(1); }); });
 
 app.listen({ port: config.RISK_PORT, host: '0.0.0.0' }, (err) => {
   if (err) { app.log.error(err); process.exit(1); }
+  cron.start();
 });
