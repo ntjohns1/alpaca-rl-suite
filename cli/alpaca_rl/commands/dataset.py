@@ -88,3 +88,34 @@ def delete_dataset(dataset_id, yes):
     except APIError as e:
         print_error(str(e))
         raise SystemExit(1)
+
+
+@dataset.command("build")
+@click.option("--name", required=True, help="Dataset name")
+@click.option("--symbols", required=True, help="Comma-separated list of symbols (e.g., SPY,QQQ)")
+@click.option("--start", required=True, help="Start date (YYYY-MM-DD)")
+@click.option("--end", required=True, help="End date (YYYY-MM-DD)")
+@click.option("--splits", type=int, required=True, help="Number of cross-validation splits")
+@click.option("--train-frac", type=float, required=True, help="Training fraction (e.g., 0.7)")
+@click.option("--feature-version", default=None, help="Feature version (e.g., v2)")
+def build_dataset(name, symbols, start, end, splits, train_frac, feature_version):
+    """Build a new dataset for training."""
+    symbol_list = [s.strip() for s in symbols.split(",")]
+    try:
+        result = client.dataset_build(
+            name=name,
+            symbols=symbol_list,
+            start_date=start,
+            end_date=end,
+            n_splits=splits,
+            train_frac=train_frac,
+            feature_version=feature_version,
+        )
+        print_success("Dataset build initiated")
+        print_kv({
+            "datasetId": result.get("datasetId") or result.get("dataset_id"),
+            "configHash": result.get("configHash") or result.get("config_hash"),
+        })
+    except APIError as e:
+        print_error(str(e))
+        raise SystemExit(1)
