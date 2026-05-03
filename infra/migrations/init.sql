@@ -174,8 +174,11 @@ CREATE TABLE IF NOT EXISTS risk_state (
     kill_switch     BOOLEAN         NOT NULL DEFAULT FALSE,
     daily_loss_usd  NUMERIC(18,2)   NOT NULL DEFAULT 0,
     max_daily_loss  NUMERIC(18,2)   NOT NULL DEFAULT 1000,
+    portfolio_value NUMERIC(18,2),
     reason          TEXT
 );
+-- Idempotent column add for environments where init.sql ran before portfolio_value existed.
+ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS portfolio_value NUMERIC(18,2);
 INSERT INTO risk_state (kill_switch, daily_loss_usd, max_daily_loss)
 VALUES (FALSE, 0, 1000)
 ON CONFLICT DO NOTHING;

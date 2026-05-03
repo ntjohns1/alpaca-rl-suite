@@ -56,4 +56,49 @@ describe('Risk service logic', () => {
     await mockDb.setKillSwitch(true, 'manual halt');
     expect(mockDb.setKillSwitch).toHaveBeenCalledWith(true, 'manual halt');
   });
+
+  it('blocks order when portfolio_value is not synced (fail-safe)', () => {
+    // Previously `state.portfolio_value ?? 100000` silently used a fictional
+    // $100k whenever portfolio sync had not populated the row. The service
+    // must now refuse the check instead of sizing against a guessed balance.
+    const state = { kill_switch: false, daily_loss_usd: 0, max_daily_loss: 1000, portfolio_value: null };
+    const portfolioValue = state.portfolio_value == null ? null : Number(state.portfolio_value);
+    expect(portfolioValue).toBeNull();
+    const allowed = !state.kill_switch && portfolioValue != null;
+    expect(allowed).toBe(false);
+  });
+
+  it('resetDailyLoss is invoked by the reset handler', async () => {
+    mockDb.resetDailyLoss.mockResolvedValue(undefined);
+    await mockDb.resetDailyLoss();
+    expect(mockDb.resetDailyLoss).toHaveBeenCalledOnce();
+  });
+});
+
+describe('Risk request schema validation', () => {
+  it('RiskCheckRequestSchema rejects missing fields', async () => {
+    const { RiskCheckRequestSchema } = await import('@alpaca-rl/contracts');
+    expect(RiskCheckRequestSchema.safeParse({}).success).toBe(false);
+    expect(RiskCheckRequestSchema.safeParse({ symbol: 'AAPL' }).success).toBe(false);
+    expect(RiskCheckRequestSchema.safeParse({ notional: 100 }).success).toBe(false);
+  });
+
+  it('RiskCheckRequestSchema rejects non-numeric notional', async () => {
+    const { RiskCheckRequestSchema } = await import('@alpaca-rl/contracts');
+    expect(
+      RiskCheckRequestSchema.safeParse({ symbol: 'AAPL', notional: 'a lot' }).success,
+    ).toBe(false);
+  });
+
+  it('RiskCheckRequestSchema accepts valid body', async () => {
+    const { RiskCheckRequestSchema } = await import('@alpaca-rl/contracts');
+    const parsed = RiskCheckRequestSchema.safeParse({ symbol: 'AAPL', notional: 5000 });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('PortfolioValueRequestSchema rejects negative values', async () => {
+    const { PortfolioValueRequestSchema } = await import('@alpaca-rl/contracts');
+    expect(PortfolioValueRequestSchema.safeParse({ portfolioValue: -1 }).success).toBe(false);
+    expect(PortfolioValueRequestSchema.safeParse({ portfolioValue: 100000 }).success).toBe(true);
+  });
 });

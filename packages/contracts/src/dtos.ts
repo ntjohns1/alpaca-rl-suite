@@ -200,3 +200,19 @@ export const HaltRequestSchema = z.object({
   reason: z.string().min(1),
 });
 export type HaltRequest = z.infer<typeof HaltRequestSchema>;
+
+export const RiskCheckRequestSchema = z.object({
+  symbol: z.string().min(1).max(16),
+  notional: z.number().finite(),
+});
+export type RiskCheckRequest = z.infer<typeof RiskCheckRequestSchema>;
+
+export const PortfolioValueRequestSchema = z.object({
+  portfolioValue: z.number().nonnegative().finite(),
+});
+export type PortfolioValueRequest = z.infer<typeof PortfolioValueRequestSchema>;
+
+export const DailyPLRequestSchema = z.object({
+  dailyLoss: z.number().finite(),
+});
+export type DailyPLRequest = z.infer<typeof DailyPLRequestSchema>;
