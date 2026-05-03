@@ -21,10 +21,21 @@ app.post('/auth/login', async (req, reply) => {
     return reply.status(401).send({ error: 'Invalid credentials' });
   }
 
+  // Per-service audiences let downstream verifiers (e.g. orders) pin tokens
+  // to the services they're meant for. The `scope` set here grants the
+  // calling API key access to every service action — proper RBAC scoped to
+  // the key's role is tracked separately and is a follow-up.
   const token = jwt.sign(
-    { sub: body.data.apiKey, iat: Math.floor(Date.now() / 1000) },
+    {
+      sub: body.data.apiKey,
+      iat: Math.floor(Date.now() / 1000),
+      scope: 'orders:read orders:write runner:read runner:write risk:read risk:write',
+    },
     config.JWT_SECRET,
-    { expiresIn: config.JWT_EXPIRES_IN } as any,
+    {
+      expiresIn: config.JWT_EXPIRES_IN,
+      audience: ['orders', 'strategy-runner', 'risk'],
+    } as any,
   );
 
   return reply.send({ accessToken: token, expiresIn: 86400 });
@@ -40,7 +51,7 @@ app.get('/auth/verify', async (req, reply) => {
     return reply.status(401).send({ error: 'Missing token' });
   }
   try {
-    const decoded = jwt.verify(auth.slice(7), config.JWT_SECRET);
+    const decoded = jwt.verify(auth.slice(7), config.JWT_SECRET, { algorithms: ['HS256'] });
     return reply.send({ valid: true, payload: decoded });
   } catch {
     return reply.status(401).send({ valid: false, error: 'Invalid token' });
@@ -53,5 +64,8 @@ app.get('/metrics', async (_req, reply) => {
 });
 
 app.listen({ port: config.AUTH_PORT, host: '0.0.0.0' }, (err) => {
-  if (err) { app.log.error(err); process.exit(1); }
+  if (err) {
+    app.log.error(err);
+    process.exit(1);
+  }
 });

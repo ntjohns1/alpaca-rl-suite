@@ -28,22 +28,32 @@ export class OrdersDb {
        ON CONFLICT (idempotency_key) DO UPDATE SET status = order_event.status
        RETURNING *`,
       [
-        id, order.idempotencyKey, order.symbol, order.side,
-        order.qty, order.notional ?? null, order.orderType,
-        order.timeInForce ?? 'day', order.limitPrice ?? null, order.traceId ?? null,
+        id,
+        order.idempotencyKey,
+        order.symbol,
+        order.side,
+        order.qty,
+        order.notional ?? null,
+        order.orderType,
+        order.timeInForce ?? 'day',
+        order.limitPrice ?? null,
+        order.traceId ?? null,
       ],
     );
     return res.rows[0];
   }
 
-  async updateOrderStatus(idempotencyKey: string, update: {
-    alpacaOrderId?: string;
-    status: string;
-    filledQty?: number;
-    filledAvgPrice?: number;
-    commission?: number;
-    rawEvent?: object;
-  }) {
+  async updateOrderStatus(
+    idempotencyKey: string,
+    update: {
+      alpacaOrderId?: string;
+      status: string;
+      filledQty?: number;
+      filledAvgPrice?: number;
+      commission?: number;
+      rawEvent?: object;
+    },
+  ) {
     await this.pool.query(
       `UPDATE order_event SET
         alpaca_order_id   = COALESCE($2, alpaca_order_id),
@@ -66,8 +76,14 @@ export class OrdersDb {
   }
 
   async getOrder(id: string) {
+    const res = await this.pool.query(`SELECT * FROM order_event WHERE id = $1`, [id]);
+    return res.rows[0] ?? null;
+  }
+
+  async getOrderByIdempotencyKey(idempotencyKey: string) {
     const res = await this.pool.query(
-      `SELECT * FROM order_event WHERE id = $1`, [id],
+      `SELECT * FROM order_event WHERE idempotency_key = $1 LIMIT 1`,
+      [idempotencyKey],
     );
     return res.rows[0] ?? null;
   }
@@ -76,7 +92,8 @@ export class OrdersDb {
     const params: any[] = [limit];
     const where = status ? `WHERE status = $${params.push(status)}` : '';
     const res = await this.pool.query(
-      `SELECT * FROM order_event ${where} ORDER BY created_at DESC LIMIT $1`, params,
+      `SELECT * FROM order_event ${where} ORDER BY created_at DESC LIMIT $1`,
+      params,
     );
     return res.rows;
   }
