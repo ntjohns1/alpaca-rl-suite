@@ -59,6 +59,7 @@ services:
       KEYCLOAK_REALM: placeholder
       KEYCLOAK_CLIENT_ID: placeholder
       AUTH_DISABLED: "true"
+      ENVIRONMENT: test
     ports:
       - "18002:8002"
     depends_on:
@@ -81,6 +82,7 @@ services:
       KEYCLOAK_REALM: placeholder
       KEYCLOAK_CLIENT_ID: placeholder
       AUTH_DISABLED: "true"
+      ENVIRONMENT: test
     ports:
       - "18003:8003"
     depends_on:
@@ -109,6 +111,7 @@ services:
       KEYCLOAK_REALM: placeholder
       KEYCLOAK_CLIENT_ID: placeholder
       AUTH_DISABLED: "true"
+      ENVIRONMENT: test
     ports:
       - "18011:8011"
     depends_on:
