@@ -203,12 +203,12 @@ export type HaltRequest = z.infer<typeof HaltRequestSchema>;
 
 export const RiskCheckRequestSchema = z.object({
   symbol: z.string().min(1).max(16),
-  notional: z.number().finite(),
+  notional: z.number().finite().positive(),
 });
 export type RiskCheckRequest = z.infer<typeof RiskCheckRequestSchema>;
 
 export const PortfolioValueRequestSchema = z.object({
-  portfolioValue: z.number().nonnegative().finite(),
+  portfolioValue: z.number().positive().finite(),
 });
 export type PortfolioValueRequest = z.infer<typeof PortfolioValueRequestSchema>;
 

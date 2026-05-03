@@ -425,6 +425,9 @@ importers:
       fastify:
         specifier: ^4.27.0
         version: 4.29.1
+      jsonwebtoken:
+        specifier: ^9.0.0
+        version: 9.0.3
       nats:
         specifier: ^2.18.0
         version: 2.29.3
@@ -438,6 +441,9 @@ importers:
         specifier: ^3.22.0
         version: 3.25.76
     devDependencies:
+      '@types/jsonwebtoken':
+        specifier: ^9.0.0
+        version: 9.0.10
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.35

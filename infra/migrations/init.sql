@@ -168,20 +168,25 @@ CREATE INDEX IF NOT EXISTS idx_policy_bundle_promoted ON policy_bundle (promoted
 -- ─────────────────────────────────────────
 -- Risk / kill switch state
 -- ─────────────────────────────────────────
+-- Singleton table: id is fixed at 1. The CHECK constraint and explicit id in
+-- INSERT prevent drift from container restarts generating extra rows (which
+-- caused every UPDATE to touch all rows while getState() only read the first).
 CREATE TABLE IF NOT EXISTS risk_state (
-    id              SERIAL          PRIMARY KEY,
-    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-    kill_switch     BOOLEAN         NOT NULL DEFAULT FALSE,
-    daily_loss_usd  NUMERIC(18,2)   NOT NULL DEFAULT 0,
-    max_daily_loss  NUMERIC(18,2)   NOT NULL DEFAULT 1000,
-    portfolio_value NUMERIC(18,2),
-    reason          TEXT
+    id                          INTEGER         PRIMARY KEY CHECK (id = 1),
+    updated_at                  TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
+    kill_switch                 BOOLEAN         NOT NULL DEFAULT FALSE,
+    daily_loss_usd              NUMERIC(18,2)   NOT NULL DEFAULT 0,
+    max_daily_loss              NUMERIC(18,2)   NOT NULL DEFAULT 1000,
+    portfolio_value             NUMERIC(18,2),
+    portfolio_value_updated_at  TIMESTAMPTZ,
+    reason                      TEXT
 );
--- Idempotent column add for environments where init.sql ran before portfolio_value existed.
+-- Idempotent column adds for environments where init.sql ran before these columns existed.
 ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS portfolio_value NUMERIC(18,2);
-INSERT INTO risk_state (kill_switch, daily_loss_usd, max_daily_loss)
-VALUES (FALSE, 0, 1000)
-ON CONFLICT DO NOTHING;
+ALTER TABLE risk_state ADD COLUMN IF NOT EXISTS portfolio_value_updated_at TIMESTAMPTZ;
+INSERT INTO risk_state (id, kill_switch, daily_loss_usd, max_daily_loss)
+VALUES (1, FALSE, 0, 1000)
+ON CONFLICT (id) DO NOTHING;
 
 -- ─────────────────────────────────────────
 -- Backtest reports

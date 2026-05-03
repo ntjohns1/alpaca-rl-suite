@@ -45,6 +45,8 @@ const ConfigSchema = z.object({
   MAX_DAILY_LOSS_USD: z.coerce.number().positive().default(1000),
   MAX_POSITION_SIZE_PCT: z.coerce.number().min(0).max(1).default(0.1),
   KILL_SWITCH_ENABLED: z.coerce.boolean().default(false),
+  // Maximum age of a portfolio_value sync before /risk/check treats it as stale (seconds).
+  MAX_PORTFOLIO_STALENESS_S: z.coerce.number().positive().default(3600),
 
   // Trading mode
   TRADING_MODE: z.enum(['paper', 'live']).default('paper'),

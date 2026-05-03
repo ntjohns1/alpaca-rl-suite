@@ -350,8 +350,13 @@ export class RunnerScheduler {
       });
       if (!checkRes.ok) {
         const reason = (checkRes.body as any)?.reason ?? 'unknown';
+        const isUnavailable = reason === 'portfolio_unsynced' || reason === 'portfolio_stale';
         this.log.warn({ traceId, symbol: trade.symbol, side: trade.side, reason }, '[runner] risk check blocked');
-        runnerOrdersSubmittedTotal.inc({ symbol: trade.symbol, side: trade.side, outcome: 'risk_blocked' });
+        runnerOrdersSubmittedTotal.inc({
+          symbol: trade.symbol,
+          side: trade.side,
+          outcome: isUnavailable ? 'risk_unavailable' : 'risk_blocked',
+        });
         return;
       }
 
