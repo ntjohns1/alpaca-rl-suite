@@ -18,9 +18,9 @@ services:
   postgres:
     image: timescale/timescaledb:latest-pg15
     environment:
-      POSTGRES_USER: ${DB_USER:-rl_user}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
-      POSTGRES_DB: ${DB_NAME:-alpaca_rl}
+      POSTGRES_USER: ${DB_USER:?DB_USER must be set}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD must be set}
+      POSTGRES_DB: ${DB_NAME:?DB_NAME must be set}
     ports:
       - "5432:5432"
     volumes:
@@ -63,8 +63,8 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ':9001'
     environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -91,8 +91,8 @@ services:
     environment:
       - DB=postgres12
       - DB_PORT=5432
-      - POSTGRES_USER=rl_user
-      - POSTGRES_PWD=${DB_PASSWORD}
+      - POSTGRES_USER=${DB_USER:?DB_USER must be set}
+      - POSTGRES_PWD=${DB_PASSWORD:?DB_PASSWORD must be set}
       - POSTGRES_SEEDS=postgres
     networks:
       - backend
@@ -134,17 +134,17 @@ services:
   auth:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/auth:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       JWT_EXPIRES_IN: 24h
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       AUTH_PORT: "3001"
     ports:
       - "3001:3001"
@@ -172,15 +172,15 @@ services:
   alpaca-adapter:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/alpaca-adapter:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
-      ALPACA_DATA_URL: ${ALPACA_DATA_URL:-https://data.alpaca.markets}
-      ALPACA_STREAM_URL: ${ALPACA_STREAM_URL:-wss://stream.data.alpaca.markets}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:?ALPACA_BASE_URL must be set}
+      ALPACA_DATA_URL: ${ALPACA_DATA_URL:?ALPACA_DATA_URL must be set}
+      ALPACA_STREAM_URL: ${ALPACA_STREAM_URL:?ALPACA_STREAM_URL must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       ALPACA_ADAPTER_PORT: "3002"
     ports:
       - "3002:3002"
@@ -208,14 +208,14 @@ services:
   market-ingest:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/market-ingest:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      ALPACA_BASE_URL: https://paper-api.alpaca.markets
-      ALPACA_DATA_URL: https://data.alpaca.markets
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:?ALPACA_BASE_URL must be set}
+      ALPACA_DATA_URL: ${ALPACA_DATA_URL:?ALPACA_DATA_URL must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       MARKET_INGEST_PORT: "3003"
     ports:
       - "3003:3003"
@@ -243,12 +243,12 @@ services:
   orders:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/orders:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       ORDERS_PORT: "3004"
     ports:
       - "3004:3004"
@@ -276,15 +276,15 @@ services:
   risk:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/risk:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      MAX_DAILY_LOSS_USD: "1000"
-      MAX_POSITION_SIZE_PCT: "0.10"
-      KILL_SWITCH_ENABLED: "false"
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      MAX_DAILY_LOSS_USD: ${MAX_DAILY_LOSS_USD:?MAX_DAILY_LOSS_USD must be set}
+      MAX_POSITION_SIZE_PCT: ${MAX_POSITION_SIZE_PCT:?MAX_POSITION_SIZE_PCT must be set}
+      KILL_SWITCH_ENABLED: ${KILL_SWITCH_ENABLED:?KILL_SWITCH_ENABLED must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       RISK_PORT: "3005"
     ports:
       - "3005:3005"
@@ -312,12 +312,12 @@ services:
   portfolio:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/portfolio:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       PORTFOLIO_PORT: "3006"
     ports:
       - "3006:3006"
@@ -345,13 +345,13 @@ services:
   strategy-runner:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/strategy-runner:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      ALPACA_API_KEY: ${ALPACA_API_KEY}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
-      TRADING_MODE: paper
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      ALPACA_API_KEY: ${ALPACA_API_KEY:?ALPACA_API_KEY must be set}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:?ALPACA_API_SECRET must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
+      TRADING_MODE: ${TRADING_MODE:?TRADING_MODE must be set}
       STRATEGY_RUNNER_PORT: "3007"
     ports:
       - "3007:3007"
@@ -379,10 +379,10 @@ services:
   api-gateway:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/api-gateway:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      JWT_SECRET: ${JWT_SECRET}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       API_GATEWAY_PORT: "3000"
       # Note: No ALPACA credentials — api-gateway proxies, doesn't trade
     ports:
@@ -417,10 +417,10 @@ services:
       DATASET_SERVICE_URL: http://dataset-builder:8003
       DASHBOARD_SERVICE_URL: http://dashboard:8020
       GRAFANA_URL: http://grafana:3000
-      GRAFANA_EXTERNAL_URL: https://grafana.nelsonjohns.com
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      GRAFANA_EXTERNAL_URL: ${GRAFANA_EXTERNAL_URL:-https://grafana.nelsonjohns.com}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
       WEB_UI_PORT: "3200"
     ports:
@@ -449,14 +449,14 @@ services:
   dashboard:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/dashboard:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
       KAGGLE_SERVICE_URL: http://kaggle-orchestrator:8011
       BACKTEST_SERVICE_URL: http://backtest:8001
       RL_TRAIN_SERVICE_URL: http://rl-train:8004
       DATASET_SERVICE_URL: http://dataset-builder:8003
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
       DASHBOARD_PORT: "8020"
     ports:
@@ -489,13 +489,13 @@ services:
   feature-builder:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/feature-builder:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      NATS_URL: nats://nats:4222
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      NATS_URL: ${NATS_URL:?NATS_URL must be set}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       FEATURE_BUILDER_PORT: "8002"
       # Note: No ALPACA credentials — feature-builder doesn't trade
     ports:
@@ -526,16 +526,16 @@ services:
   dataset-builder:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/dataset-builder:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: alpaca-rl-artifacts
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT must be set}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET must be set}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       DATASET_BUILDER_PORT: "8003"
     ports:
       - "8003:8003"
@@ -565,16 +565,16 @@ services:
   backtest:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/backtest:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: alpaca-rl-artifacts
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT must be set}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET must be set}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       BACKTEST_PORT: "8001"
     ports:
       - "8001:8001"
@@ -604,16 +604,16 @@ services:
   rl-train:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/rl-train:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: alpaca-rl-artifacts
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT must be set}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET must be set}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       ENVIRONMENT: production
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       RL_TRAIN_PORT: "8004"
     ports:
       - "8004:8004"
@@ -643,12 +643,12 @@ services:
   rl-infer:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/rl-infer:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: alpaca-rl-artifacts
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT must be set}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET must be set}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       RL_INFER_PORT: "8005"
     ports:
       - "8005:8005"
@@ -682,8 +682,8 @@ services:
       TEMPORAL_TASK_QUEUE: alpaca-rl-main
       RL_TRAIN_URL: http://rl-train:8004
       BACKTEST_URL: http://backtest:8001
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
     ports:
       - "8010:8010"
     networks:
@@ -712,17 +712,18 @@ services:
   kaggle-orchestrator:
     image: ghcr.io/ntjohns1/alpaca-rl-suite/kaggle-orchestrator:latest
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-rl_user}:${DB_PASSWORD}@postgres:5432/${DB_NAME:-alpaca_rl}
-      S3_ENDPOINT: http://minio:9000
-      S3_BUCKET: alpaca-rl-artifacts
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN}
-      KEYCLOAK_URL: https://auth.nelsonjohns.com
-      KEYCLOAK_REALM: alpaca-rl-suite
-      KEYCLOAK_CLIENT_ID: alpaca-rl-web-ui
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      S3_ENDPOINT: ${S3_ENDPOINT:?S3_ENDPOINT must be set}
+      S3_BUCKET: ${S3_BUCKET:?S3_BUCKET must be set}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?S3_ACCESS_KEY must be set}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?S3_SECRET_KEY must be set}
+      KAGGLE_API_TOKEN: ${KAGGLE_API_TOKEN:?KAGGLE_API_TOKEN must be set}
+      KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?KEYCLOAK_REALM must be set}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
+      KAGGLE_USERNAME: ${KAGGLE_USERNAME:?KAGGLE_USERNAME must be set}
       ENVIRONMENT: production
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:?OTEL_EXPORTER_OTLP_ENDPOINT must be set}
       KAGGLE_ORCHESTRATOR_PORT: "8011"
     ports:
       - "8011:8011"
@@ -805,7 +806,7 @@ services:
     ports:
       - "3100:3000"
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?GF_ADMIN_PASSWORD must be set}
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - grafana_data:/var/lib/grafana
