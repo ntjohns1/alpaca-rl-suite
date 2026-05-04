@@ -17,6 +17,14 @@ fake_keycloak = MagicMock()
 fake_keycloak.KeycloakOpenID = MagicMock(return_value=MagicMock(certs=lambda: {"keys": []}))
 sys.modules.setdefault("keycloak", fake_keycloak)
 
+fake_jose = types.ModuleType("jose")
+fake_jose.JWTError = type("JWTError", (Exception,), {})
+fake_jose.jwt = MagicMock()
+fake_jose_backends = types.ModuleType("jose.backends")
+fake_jose_backends.RSAKey = MagicMock()
+sys.modules.setdefault("jose", fake_jose)
+sys.modules.setdefault("jose.backends", fake_jose_backends)
+
 
 def _stub_observability():
     """Install lightweight module stubs so `from observability import ...` succeeds."""
