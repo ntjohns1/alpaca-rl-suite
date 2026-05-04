@@ -12,7 +12,6 @@ import pandas as pd
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
-import psycopg2
 from psycopg2.extras import execute_values
 from psycopg2.pool import ThreadedConnectionPool, PoolError
 import ta
