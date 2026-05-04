@@ -335,9 +335,10 @@ class TestApiEndpoints:
         assert mock_fetch.call_count == 1  # second call served from cache
 
     def test_availability_endpoint_returns_feature_and_bar_counts(self, app_client):
+        # Batched: 2 queries total (one per table), both return symbol-grouped results
         read_results = [
-            pd.DataFrame([{"feature_count": 41}]),
-            pd.DataFrame([{"bar_count": 50}]),
+            pd.DataFrame([{"symbol": "SPY", "feature_count": 41}]),
+            pd.DataFrame([{"symbol": "SPY", "bar_count": 50}]),
         ]
 
         with patch("main.get_conn", _make_get_conn()), \
@@ -351,11 +352,10 @@ class TestApiEndpoints:
         assert resp.json() == {"SPY": {"feature_rows": 41, "bar_rows": 50}}
 
     def test_availability_endpoint_supports_multiple_symbols(self, app_client):
+        # Batched: 2 queries total regardless of symbol count
         read_results = [
-            pd.DataFrame([{"feature_count": 41}]),
-            pd.DataFrame([{"bar_count": 50}]),
-            pd.DataFrame([{"feature_count": 12}]),
-            pd.DataFrame([{"bar_count": 19}]),
+            pd.DataFrame([{"symbol": "SPY", "feature_count": 41}, {"symbol": "QQQ", "feature_count": 12}]),
+            pd.DataFrame([{"symbol": "SPY", "bar_count": 50}, {"symbol": "QQQ", "bar_count": 19}]),
         ]
 
         with patch("main.get_conn", _make_get_conn()), \
@@ -370,3 +370,62 @@ class TestApiEndpoints:
             "SPY": {"feature_rows": 41, "bar_rows": 50},
             "QQQ": {"feature_rows": 12, "bar_rows": 19},
         }
+
+    def test_availability_endpoint_returns_400_for_empty_symbol_list(self, app_client):
+        resp = app_client.get(
+            "/features/availability",
+            params={"symbols": ",", "start_date": "2024-01-01", "end_date": "2024-03-31"},
+        )
+
+        assert resp.status_code == 400
+        assert "symbols" in resp.json()["detail"].lower()
+
+    def test_availability_endpoint_returns_422_for_invalid_dates(self, app_client):
+        resp = app_client.get(
+            "/features/availability",
+            params={"symbols": "SPY", "start_date": "not-a-date", "end_date": "2024-03-31"},
+        )
+
+        assert resp.status_code == 422
+
+    def test_compute_endpoint_computes_and_upserts_rows(self, app_client):
+        bars = _make_bars_df()
+        merged = _make_bars_with_sharadar()
+
+        with patch("main.get_conn", _make_get_conn()), \
+             patch("pandas.read_sql", return_value=bars), \
+             patch("main.merge_sharadar_features", return_value=merged), \
+             patch("main.upsert_features") as mock_upsert:
+            resp = app_client.post(
+                "/features/compute",
+                json={"symbols": ["SPY"], "start_date": "2024-01-01", "end_date": "2024-12-31"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["SPY"]["status"] == "ok"
+        assert body["SPY"]["rows"] > 0
+        mock_upsert.assert_called_once()
+
+    def test_compute_endpoint_returns_insufficient_data_for_short_history(self, app_client):
+        bars = _make_bars_df(n=10)
+
+        with patch("main.get_conn", _make_get_conn()), \
+             patch("pandas.read_sql", return_value=bars), \
+             patch("main.upsert_features") as mock_upsert:
+            resp = app_client.post(
+                "/features/compute",
+                json={"symbols": ["SPY"], "start_date": "2024-01-01", "end_date": "2024-01-15"},
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["SPY"]["status"] == "insufficient_data"
+        mock_upsert.assert_not_called()
+
+    def test_compute_endpoint_returns_422_for_invalid_dates(self, app_client):
+        resp = app_client.post(
+            "/features/compute",
+            json={"symbols": ["SPY"], "start_date": "not-a-date", "end_date": "2024-12-31"},
+        )
+
+        assert resp.status_code == 422

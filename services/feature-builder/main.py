@@ -5,6 +5,7 @@ import time
 import logging
 import threading
 from contextlib import asynccontextmanager, contextmanager
+from datetime import date
 from observability import setup_observability
 
 import pandas as pd
@@ -317,8 +318,8 @@ class BuildFeaturesRequest(BaseModel):
 
 class ComputeFeaturesRequest(BaseModel):
     symbols: list[str]
-    start_date: str
-    end_date: str
+    start_date: date
+    end_date: date
 
 
 @app.post("/features/build")
@@ -335,6 +336,9 @@ def build_features(req: BuildFeaturesRequest, _user: dict = Depends(get_current_
                 results[symbol] = {"status": "insufficient_data", "rows": len(df)}
                 continue
             feat_df = compute_features(df)
+            if feat_df.empty:
+                results[symbol] = {"status": "insufficient_data", "rows": 0}
+                continue
             out_cols = ["time"] + ALL_FEATURE_COLS
             present = [c for c in out_cols if c in feat_df.columns]
             rows = feat_df[present].assign(symbol=symbol).to_dict("records")
@@ -379,6 +383,9 @@ def compute_features_for_range(req: ComputeFeaturesRequest, _user: dict = Depend
                 results[symbol] = {"status": "insufficient_data", "rows": len(df)}
                 continue
             feat_df = compute_features(df)
+            if feat_df.empty:
+                results[symbol] = {"status": "insufficient_data", "rows": 0}
+                continue
             out_cols = ["time"] + ALL_FEATURE_COLS
             present = [c for c in out_cols if c in feat_df.columns]
             rows = feat_df[present].assign(symbol=symbol).to_dict("records")
@@ -399,37 +406,43 @@ def compute_features_for_range(req: ComputeFeaturesRequest, _user: dict = Depend
 @app.get("/features/availability")
 def check_feature_availability(
     symbols: str,
-    start_date: str,
-    end_date: str,
+    start_date: date,
+    end_date: date,
     _user: dict = Depends(get_current_user),
 ):
     """Check how many feature rows exist for the given symbols and date range."""
-    symbol_list = [s.strip() for s in symbols.split(",")]
+    symbol_list = [s.strip() for s in symbols.split(",") if s.strip()]
+    if not symbol_list:
+        raise HTTPException(status_code=400, detail="No valid symbols provided")
     results = {}
     with get_conn() as conn:
-        for symbol in symbol_list:
-            row = pd.read_sql(
-                """
-                SELECT COUNT(*) as feature_count
-                FROM feature_row
-                WHERE symbol = %s AND time BETWEEN %s AND %s
-                """,
-                conn,
-                params=(symbol, start_date, end_date),
-            )
-            bar_row = pd.read_sql(
-                """
-                SELECT COUNT(*) as bar_count
-                FROM bar_1d
-                WHERE symbol = %s AND time BETWEEN %s AND %s
-                """,
-                conn,
-                params=(symbol, start_date, end_date),
-            )
-            results[symbol] = {
-                "feature_rows": int(row.iloc[0]["feature_count"]),
-                "bar_rows": int(bar_row.iloc[0]["bar_count"]),
-            }
+        feature_counts = pd.read_sql(
+            """
+            SELECT symbol, COUNT(*) as feature_count
+            FROM feature_row
+            WHERE symbol = ANY(%s) AND time BETWEEN %s AND %s
+            GROUP BY symbol
+            """,
+            conn,
+            params=(symbol_list, start_date, end_date),
+        )
+        bar_counts = pd.read_sql(
+            """
+            SELECT symbol, COUNT(*) as bar_count
+            FROM bar_1d
+            WHERE symbol = ANY(%s) AND time BETWEEN %s AND %s
+            GROUP BY symbol
+            """,
+            conn,
+            params=(symbol_list, start_date, end_date),
+        )
+    feature_map = dict(zip(feature_counts["symbol"], feature_counts["feature_count"])) if not feature_counts.empty else {}
+    bar_map = dict(zip(bar_counts["symbol"], bar_counts["bar_count"])) if not bar_counts.empty else {}
+    for symbol in symbol_list:
+        results[symbol] = {
+            "feature_rows": int(feature_map.get(symbol, 0)),
+            "bar_rows": int(bar_map.get(symbol, 0)),
+        }
     return results
 
 
