@@ -259,6 +259,29 @@ def _install_stubs():
         extras.execute_values = lambda *args, **kwargs: None
         sys.modules["psycopg2.extras"] = extras
 
+    if "psycopg2.pool" not in sys.modules:
+        pool = types.ModuleType("psycopg2.pool")
+
+        class PoolError(Exception):
+            pass
+
+        class ThreadedConnectionPool:
+            def __init__(self, minconn, maxconn, dsn, **kwargs):
+                pass
+
+            def getconn(self):
+                return _MockConn()
+
+            def putconn(self, conn, key=None, close=False):
+                pass
+
+            def closeall(self):
+                pass
+
+        pool.PoolError = PoolError
+        pool.ThreadedConnectionPool = ThreadedConnectionPool
+        sys.modules["psycopg2.pool"] = pool
+
 
 class _MockConn:
     def __enter__(self):
