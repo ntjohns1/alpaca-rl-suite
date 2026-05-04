@@ -4,7 +4,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages ./packages
 COPY services/market-ingest ./services/market-ingest
 RUN npm install -g pnpm && pnpm install
-RUN pnpm --filter "@alpaca-rl/config" --filter "@alpaca-rl/contracts" --filter "@alpaca-rl/observability" build
+RUN pnpm --filter "@alpaca-rl/config" --filter "@alpaca-rl/contracts" --filter "@alpaca-rl/observability" --filter "@alpaca-rl/auth-middleware" build
 RUN pnpm --filter @alpaca-rl/market-ingest build
 
 FROM node:20-alpine
