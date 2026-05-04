@@ -1,8 +1,10 @@
 import os
 import sys
 import math
+import time
 import logging
-from contextlib import asynccontextmanager
+import threading
+from contextlib import asynccontextmanager, contextmanager
 from observability import setup_observability
 
 import pandas as pd
@@ -11,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 import psycopg2
 from psycopg2.extras import execute_values
+from psycopg2.pool import ThreadedConnectionPool, PoolError
 import ta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
@@ -26,9 +29,30 @@ log = logging.getLogger(__name__)
 DATABASE_URL = os.environ["DATABASE_URL"]
 FEATURE_BUILDER_PORT = int(os.getenv("FEATURE_BUILDER_PORT", "8002"))
 
+_pool: ThreadedConnectionPool | None = None
+_LATEST_CACHE_TTL = 55  # bar_1d is daily; avoids recomputing on every strategy-runner poll
+_CACHE_MAX_SIZE = 500
+_latest_cache: dict[str, tuple[float, dict]] = {}
+_latest_cache_lock = threading.Lock()
 
+
+@contextmanager
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    if _pool is None:
+        raise RuntimeError("DB pool not initialized — is the app lifespan running?")
+    try:
+        conn = _pool.getconn()
+    except PoolError as e:
+        log.warning("DB connection pool exhausted: %s", e)
+        raise HTTPException(status_code=503, detail="Service at capacity, retry later")
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _pool.putconn(conn)
 
 
 # ─────────────────────────────────────────
@@ -93,6 +117,13 @@ def merge_sharadar_features(bars_df: pd.DataFrame, conn, symbol: str) -> pd.Data
     """LEFT JOIN SHARADAR daily + fundamentals onto the bars DataFrame."""
     if bars_df.empty:
         return bars_df
+
+    # Normalize bars timestamps to UTC-aware so they align with SHARADAR dates (localized below)
+    bars_df = bars_df.copy()
+    if bars_df["time"].dt.tz is None:
+        bars_df["time"] = bars_df["time"].dt.tz_localize("UTC")
+    else:
+        bars_df["time"] = bars_df["time"].dt.tz_convert("UTC")
 
     start_date = bars_df["time"].min().strftime("%Y-%m-%d")
     end_date = bars_df["time"].max().strftime("%Y-%m-%d")
@@ -189,11 +220,8 @@ def build_state_vector(row: pd.Series) -> list[float]:
 # DB helpers
 # ─────────────────────────────────────────
 def fetch_bars(symbol: str, days: int = 60, conn=None) -> pd.DataFrame:
-    close_conn = conn is None
-    if conn is None:
-        conn = get_conn()
-    try:
-        df = pd.read_sql(
+    def _query(c):
+        return pd.read_sql(
             """
             SELECT time, symbol, open::float, high::float, low::float,
                    close::float, volume::bigint
@@ -202,13 +230,14 @@ def fetch_bars(symbol: str, days: int = 60, conn=None) -> pd.DataFrame:
             ORDER BY time DESC
             LIMIT %s
             """,
-            conn,
+            c,
             params=(symbol, days),
-        )
-    finally:
-        if close_conn:
-            conn.close()
-    return df.sort_values("time").reset_index(drop=True)
+        ).sort_values("time").reset_index(drop=True)
+
+    if conn is not None:
+        return _query(conn)
+    with get_conn() as c:
+        return _query(c)
 
 
 def _safe_float(val):
@@ -262,7 +291,6 @@ def upsert_features(rows: list[dict]):
                     for r in rows
                 ],
             )
-        conn.commit()
 
 
 # ─────────────────────────────────────────
@@ -270,8 +298,11 @@ def upsert_features(rows: list[dict]):
 # ─────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _pool
+    _pool = ThreadedConnectionPool(2, 10, DATABASE_URL)
     log.info("Feature Builder started")
     yield
+    _pool.closeall()
     log.info("Feature Builder shutdown")
 
 
@@ -297,17 +328,25 @@ def build_features(req: BuildFeaturesRequest, _user: dict = Depends(get_current_
         try:
             with get_conn() as conn:
                 df = fetch_bars(symbol, req.days, conn=conn)
-                if len(df) < 22:
-                    results[symbol] = {"status": "insufficient_data", "rows": len(df)}
-                    continue
-                df = merge_sharadar_features(df, conn, symbol)
+                if len(df) >= 22:
+                    df = merge_sharadar_features(df, conn, symbol)
+            # Insufficient-data check outside the connection block — avoids committing a read-only transaction
+            if len(df) < 22:
+                results[symbol] = {"status": "insufficient_data", "rows": len(df)}
+                continue
             feat_df = compute_features(df)
             out_cols = ["time"] + ALL_FEATURE_COLS
             present = [c for c in out_cols if c in feat_df.columns]
             rows = feat_df[present].assign(symbol=symbol).to_dict("records")
             upsert_features(rows)
+            with _latest_cache_lock:
+                _latest_cache.pop(symbol, None)
             results[symbol] = {"status": "ok", "rows": len(rows)}
             log.info(f"Built {len(rows)} feature rows for {symbol}")
+        except HTTPException as e:
+            # Pool exhaustion (503) is a transient capacity issue, not a per-symbol bug — log accordingly
+            log.warning("Capacity error building %s (HTTP %s): %s", symbol, e.status_code, e.detail)
+            results[symbol] = {"status": "error", "error": e.detail}
         except Exception as e:
             log.error(f"Feature build failed for {symbol}: {e}")
             results[symbol] = {"status": "error", "error": str(e)}
@@ -333,17 +372,24 @@ def compute_features_for_range(req: ComputeFeaturesRequest, _user: dict = Depend
                     conn,
                     params=(symbol, req.start_date, req.end_date),
                 )
-                if len(df) < 22:
-                    results[symbol] = {"status": "insufficient_data", "rows": len(df)}
-                    continue
-                df = merge_sharadar_features(df, conn, symbol)
+                if len(df) >= 22:
+                    df = merge_sharadar_features(df, conn, symbol)
+            # Insufficient-data check outside the connection block — avoids committing a read-only transaction
+            if len(df) < 22:
+                results[symbol] = {"status": "insufficient_data", "rows": len(df)}
+                continue
             feat_df = compute_features(df)
             out_cols = ["time"] + ALL_FEATURE_COLS
             present = [c for c in out_cols if c in feat_df.columns]
             rows = feat_df[present].assign(symbol=symbol).to_dict("records")
             upsert_features(rows)
+            with _latest_cache_lock:
+                _latest_cache.pop(symbol, None)
             results[symbol] = {"status": "ok", "rows": len(rows)}
             log.info(f"Computed {len(rows)} feature rows for {symbol} [{req.start_date} → {req.end_date}]")
+        except HTTPException as e:
+            log.warning("Capacity error computing %s (HTTP %s): %s", symbol, e.status_code, e.detail)
+            results[symbol] = {"status": "error", "error": e.detail}
         except Exception as e:
             log.error(f"Feature compute failed for {symbol}: {e}")
             results[symbol] = {"status": "error", "error": str(e)}
@@ -389,12 +435,22 @@ def check_feature_availability(
 
 @app.get("/features/latest/{symbol}")
 def get_latest_features(symbol: str, _user: dict = Depends(get_current_user)):
+    now = time.time()
+    with _latest_cache_lock:
+        cached = _latest_cache.get(symbol)
+    if cached is not None:
+        ts, result = cached
+        if now - ts < _LATEST_CACHE_TTL:
+            return result
+
     try:
         with get_conn() as conn:
             df = fetch_bars(symbol, 60, conn=conn)
-            if len(df) < 22:
-                raise HTTPException(status_code=404, detail="Insufficient data")
-            df = merge_sharadar_features(df, conn, symbol)
+            if len(df) >= 22:
+                df = merge_sharadar_features(df, conn, symbol)
+        # 404 raised outside the connection block — avoids rolling back a read-only transaction
+        if len(df) < 22:
+            raise HTTPException(status_code=404, detail="Insufficient data")
         feat_df = compute_features(df)
         if feat_df.empty:
             raise HTTPException(status_code=404, detail="No features computed")
@@ -404,12 +460,20 @@ def get_latest_features(symbol: str, _user: dict = Depends(get_current_user)):
         for col in ALL_FEATURE_COLS:
             if col in latest.index:
                 features[col] = _safe_float(latest[col])
-        return {
+        result = {
             "symbol": symbol,
-            "time": str(latest["time"]),
+            "time": latest["time"].strftime("%Y-%m-%dT%H:%M:%SZ"),
             "state_vector": state_vector,
             "features": features,
         }
+        with _latest_cache_lock:
+            if len(_latest_cache) >= _CACHE_MAX_SIZE:
+                # O(n) scan under the lock; acceptable at ≤500 symbols (~10µs).
+                # If the universe grows, replace with collections.OrderedDict for O(1) LRU.
+                oldest = min(_latest_cache, key=lambda k: _latest_cache[k][0])
+                del _latest_cache[oldest]
+            _latest_cache[symbol] = (now, result)
+        return result
     except HTTPException:
         raise
     except Exception as e:
