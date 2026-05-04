@@ -29,12 +29,12 @@ app.post('/auth/login', async (req, reply) => {
     {
       sub: body.data.apiKey,
       iat: Math.floor(Date.now() / 1000),
-      scope: 'orders:read orders:write runner:read runner:write risk:read risk:write',
+      scope: 'orders:read orders:write runner:read runner:write risk:read risk:write market:read market:write',
     },
     config.JWT_SECRET,
     {
       expiresIn: config.JWT_EXPIRES_IN,
-      audience: ['orders', 'strategy-runner', 'risk'],
+      audience: ['orders', 'strategy-runner', 'risk', 'market-ingest'],
     } as any,
   );
 

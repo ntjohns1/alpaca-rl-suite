@@ -11,6 +11,7 @@
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
+    "@alpaca-rl/auth-middleware": "workspace:*",
     "@alpaca-rl/config": "workspace:*",
     "@alpaca-rl/contracts": "workspace:*",
     "@alpaca-rl/observability": "workspace:*",

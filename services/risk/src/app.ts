@@ -1,5 +1,4 @@
-import Fastify, { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import jwt from 'jsonwebtoken';
+import Fastify, { FastifyInstance } from 'fastify';
 import { Config, loadConfig } from '@alpaca-rl/config';
 import {
   HaltRequestSchema,
@@ -8,6 +7,7 @@ import {
   DailyPLRequestSchema,
 } from '@alpaca-rl/contracts';
 import { registry } from '@alpaca-rl/observability';
+import { createRequireAuth } from '@alpaca-rl/auth-middleware';
 import { RiskDb } from './riskDb.js';
 
 // Stable reason codes returned in every non-200 response. The `message` field
@@ -20,59 +20,12 @@ const REASON = {
   DAILY_LOSS_EXCEEDED:   'daily_loss_exceeded',
 } as const;
 
-// Verifies a Bearer JWT, requires `aud` to contain 'risk', and (when a scope
-// is specified) requires the token's `scope` claim to include it.
-//
-// NOTE: The auth service currently mints a universal token with
-// `aud: ['orders', 'strategy-runner', 'risk']` and a full scope string for
-// every caller that authenticates with a valid API key. The scope checks below
-// are therefore advisory rather than truly restrictive — any token the auth
-// service issues today satisfies `risk:write`. Proper per-caller scoped tokens
-// are tracked as a follow-up to ALPCA-8 and must be addressed before this
-// service is exposed beyond the internal cluster.
-function requireAuth(config: Config, scope?: string) {
-  return async (req: FastifyRequest, reply: FastifyReply) => {
-    const auth = req.headers.authorization;
-    if (!auth?.startsWith('Bearer ')) {
-      req.log.warn({ ip: req.ip, route: req.url }, 'auth: missing bearer token');
-      return reply.status(401).send({ error: 'missing bearer token' });
-    }
-    let payload: jwt.JwtPayload;
-    try {
-      const decoded = jwt.verify(auth.slice(7), config.JWT_SECRET, {
-        algorithms: ['HS256'],
-        audience: 'risk',
-      });
-      // jwt.verify with a string secret returns JwtPayload or string.
-      // A bare string payload would have no `sub` or `scope`, treat as invalid.
-      if (typeof decoded === 'string') throw new Error('unexpected string payload');
-      payload = decoded;
-    } catch (err: unknown) {
-      const reason = err instanceof Error ? err.name : 'unknown';
-      req.log.warn({ ip: req.ip, route: req.url, reason }, 'auth: token verification failed');
-      return reply.status(401).send({ error: 'invalid token' });
-    }
-    if (scope) {
-      const claim = payload.scope;
-      const scopes = typeof claim === 'string' ? claim.split(/\s+/).filter(Boolean) : [];
-      if (!scopes.includes(scope)) {
-        req.log.warn(
-          { ip: req.ip, route: req.url, sub: payload.sub, required: scope },
-          'auth: missing required scope',
-        );
-        return reply.status(403).send({ error: 'insufficient scope', required: scope });
-      }
-    }
-    req.authSub = payload.sub;
-  };
-}
-
 export function createApp(
   config: Config = loadConfig(),
   db: RiskDb = new RiskDb(config),
 ): FastifyInstance {
   const app = Fastify({ logger: true });
-  const auth = (scope?: string) => requireAuth(config, scope);
+  const auth = createRequireAuth(config.JWT_SECRET, 'risk');
 
   // ── State ────────────────────────────────────────────────────────────
   app.get('/risk/state', async (_req, reply) => {

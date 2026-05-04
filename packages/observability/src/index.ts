@@ -13,4 +13,6 @@ export {
   runnerSignalsTotal,
   runnerOrdersSubmittedTotal,
   runnerEquityUsd,
+  invalidBarEventsTotal,
+  barProcessingErrorsTotal,
 } from './metrics';

@@ -85,3 +85,17 @@ export const runnerEquityUsd = new client.Gauge({
   name: 'alpaca_rl_runner_equity_usd',
   help: 'Most recent equity used for sizing (USD)',
 });
+
+// ── Market-ingest pipeline metrics ───────────────────────────────────
+
+export const invalidBarEventsTotal = new client.Counter({
+  name: 'alpaca_rl_invalid_bar_events_total',
+  help: 'Bar events dropped due to schema validation failure',
+  labelNames: ['symbol'] as const,
+});
+
+export const barProcessingErrorsTotal = new client.Counter({
+  name: 'alpaca_rl_bar_processing_errors_total',
+  help: 'Bar events that failed DB write and were nak\'d for redelivery',
+  labelNames: ['symbol'] as const,
+});

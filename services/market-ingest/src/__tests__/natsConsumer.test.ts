@@ -21,6 +21,11 @@ const { mockAck, mockNak, mockConsume, mockJsm, mockNc, mockUpsertBar } =
     return { mockAck, mockNak, mockConsume, mockJsm, mockNc, mockUpsertBar };
   });
 
+vi.mock('@alpaca-rl/observability', () => ({
+  invalidBarEventsTotal: { inc: vi.fn() },
+  barProcessingErrorsTotal: { inc: vi.fn() },
+}));
+
 vi.mock('nats', () => ({
   connect:         vi.fn().mockResolvedValue(mockNc),
   StringCodec:     vi.fn(() => ({ decode: (d: Uint8Array) => new TextDecoder().decode(d) })),
@@ -44,9 +49,16 @@ function makeMockMsg(payload: unknown) {
 
 // ── Import after mocks ────────────────────────────────────────────────
 import { NatsBarConsumer } from '../natsConsumer';
+import { invalidBarEventsTotal, barProcessingErrorsTotal } from '@alpaca-rl/observability';
 
 const mockConfig = {
   NATS_URL: 'nats://localhost:4222',
+} as any;
+
+const mockLogger = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
 } as any;
 
 const validBar1d = {
@@ -68,7 +80,7 @@ describe('NatsBarConsumer', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    consumer = new NatsBarConsumer(mockConfig, { upsertBar: mockUpsertBar } as any);
+    consumer = new NatsBarConsumer(mockConfig, { upsertBar: mockUpsertBar } as any, mockLogger);
   });
 
   it('connects and ensures MARKET_BARS stream exists', async () => {
@@ -124,6 +136,7 @@ describe('NatsBarConsumer', () => {
 
     expect(mockUpsertBar).not.toHaveBeenCalled();
     expect(mockAck).toHaveBeenCalledOnce();
+    expect(invalidBarEventsTotal.inc).toHaveBeenCalledWith({ symbol: 'unknown' });
   });
 
   it('naks a message when upsertBar throws', async () => {
@@ -138,6 +151,7 @@ describe('NatsBarConsumer', () => {
     await new Promise(r => setTimeout(r, 20));
 
     expect(mockNak).toHaveBeenCalledOnce();
+    expect(barProcessingErrorsTotal.inc).toHaveBeenCalledWith({ symbol: 'AAPL' });
   });
 
   it('drains NATS connection on stop()', async () => {
