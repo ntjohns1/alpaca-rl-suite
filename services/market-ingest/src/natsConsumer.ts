@@ -9,8 +9,10 @@ import {
   RetentionPolicy,
   StorageType,
 } from 'nats';
+import type { FastifyBaseLogger } from 'fastify';
 import { Config } from '@alpaca-rl/config';
 import { BarEventSchema } from '@alpaca-rl/contracts';
+import { invalidBarEventsTotal, barProcessingErrorsTotal } from '@alpaca-rl/observability';
 import { DbClient } from './dbClient';
 
 const sc = StringCodec();
@@ -20,7 +22,11 @@ export class NatsBarConsumer {
   private js: JetStreamClient | null = null;
   private running = false;
 
-  constructor(private config: Config, private db: DbClient) {}
+  constructor(
+    private config: Config,
+    private db: DbClient,
+    private log: FastifyBaseLogger,
+  ) {}
 
   async connect() {
     this.nc = await connect({ servers: this.config.NATS_URL });
@@ -44,7 +50,7 @@ export class NatsBarConsumer {
     }
 
     this.js = this.nc.jetstream();
-    console.log('[nats-consumer] connected and stream ready');
+    this.log.info('[nats-consumer] connected and stream ready');
   }
 
   async startConsuming() {
@@ -64,24 +70,33 @@ export class NatsBarConsumer {
       },
     );
 
-    console.log('[nats-consumer] starting bar consumption');
+    this.log.info('[nats-consumer] starting bar consumption');
 
     const msgs = await consumer.consume({ max_messages: 100 });
 
+    // NOTE: Invalid messages are acked (not nak'd) to avoid infinite redelivery.
+    // There is currently no dead-letter queue — malformed events are dropped.
     (async () => {
       for await (const msg of msgs) {
         if (!this.running) break;
+        // Hoisted so the catch block can label the metric even if parsing succeeded
+        // but the DB write failed.
+        let symbolForMetric = 'unknown';
         try {
           const raw = JSON.parse(sc.decode(msg.data));
           const parsed = BarEventSchema.safeParse(raw);
 
           if (!parsed.success) {
-            console.warn('[nats-consumer] invalid bar event:', parsed.error.issues[0]);
+            // Best-effort symbol extraction from raw payload for metric label.
+            if (typeof raw?.symbol === 'string') symbolForMetric = raw.symbol;
+            this.log.warn({ issue: parsed.error.issues[0] }, '[nats-consumer] invalid bar event');
+            invalidBarEventsTotal.inc({ symbol: symbolForMetric });
             msg.ack();
             continue;
           }
 
           const bar = parsed.data;
+          symbolForMetric = bar.symbol;
           const table = bar.timeframe === '1m' ? 'bar_1m' : 'bar_1d';
 
           await this.db.upsertBar(table, {
@@ -98,11 +113,15 @@ export class NatsBarConsumer {
 
           msg.ack();
         } catch (err) {
-          console.error('[nats-consumer] processing error:', err);
+          this.log.error({ err, symbol: symbolForMetric }, '[nats-consumer] processing error');
+          barProcessingErrorsTotal.inc({ symbol: symbolForMetric });
           msg.nak();
         }
       }
-    })();
+    })().catch((err) => {
+      this.running = false;
+      this.log.error({ err }, '[nats-consumer] message iterator failed');
+    });
   }
 
   async stop() {

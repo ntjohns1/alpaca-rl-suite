@@ -10,6 +10,7 @@ const sdk = new NodeSDK({
 
 sdk.start();
 
-process.on('SIGTERM', () => {
-  sdk.shutdown().finally(() => process.exit(0));
-});
+// Callers (index.ts) sequence this after other shutdown steps before process.exit.
+export async function shutdown(): Promise<void> {
+  await sdk.shutdown();
+}

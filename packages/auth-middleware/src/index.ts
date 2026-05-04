@@ -1,0 +1,1 @@
+export { createRequireAuth } from './middleware';
