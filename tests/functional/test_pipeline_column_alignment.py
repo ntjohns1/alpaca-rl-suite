@@ -245,8 +245,15 @@ def _install_stubs():
                 for key, value in kwargs.items():
                     setattr(self, key, value)
 
+        def _field_validator(*fields, **kwargs):
+            """No-op decorator stub for pydantic.field_validator."""
+            def decorator(fn):
+                return fn
+            return decorator
+
         pydantic.BaseModel = BaseModel
         pydantic.Field = lambda default=None, **kwargs: default
+        pydantic.field_validator = _field_validator
         sys.modules["pydantic"] = pydantic
 
     if "psycopg2" not in sys.modules:
