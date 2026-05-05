@@ -272,6 +272,25 @@ class TestPreviewEndpoint:
             resp = app_client.get("/datasets/preview?symbols=SPY&rows=10")
         assert resp.json()["previewRows"] == 10
 
+    def test_total_rows_reflects_full_count(self, app_client):
+        """totalRows must come from COUNT(*), not len(preview)."""
+        df = _make_feature_df(50)
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_cur.__enter__ = lambda s: s
+        mock_cur.__exit__ = MagicMock(return_value=False)
+        mock_cur.fetchone.return_value = (50,)
+        mock_conn.cursor.return_value = mock_cur
+        mock_conn.__enter__ = lambda s: s
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        with patch("main.fetch_features", return_value=df.head(5)), \
+             patch("psycopg2.connect", return_value=mock_conn):
+            resp = app_client.get("/datasets/preview?symbols=SPY&rows=5")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["totalRows"] == 50
+        assert body["previewRows"] == 5
+
 
 class TestExportEndpoint:
     def test_exports_csv(self, app_client):
@@ -299,24 +318,167 @@ class TestExportEndpoint:
 
 
 class TestDeleteDatasetEndpoint:
-    def test_returns_204_on_success(self, app_client, mock_db):
-        mock_conn, mock_cursor = mock_db
-        mock_cursor.rowcount = 1
-        resp = app_client.delete("/datasets/d-1")
+    def _make_delete_mock(self, s3_path=None, found=True):
+        """Return a psycopg2.connect mock suitable for delete_dataset."""
+        mock_conn = MagicMock()
+        mock_cursor = MagicMock()
+        mock_cursor.__enter__ = lambda s: s
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+        mock_conn.__enter__ = lambda s: s
+        mock_conn.__exit__ = MagicMock(return_value=False)
+        mock_conn.cursor.return_value = mock_cursor
+        mock_cursor.fetchone.return_value = (s3_path,) if found else None
+        return mock_conn, mock_cursor
+
+    def test_returns_204_on_success(self, app_client):
+        mock_conn, mock_cursor = self._make_delete_mock(s3_path="datasets/test/abc123/manifest.json")
+        mock_s3 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{"Contents": [{"Key": "datasets/test/abc123/manifest.json"}]}]
+        mock_s3.get_paginator.return_value = mock_paginator
+        with patch("psycopg2.connect", return_value=mock_conn), \
+             patch("main.get_s3", return_value=mock_s3):
+            resp = app_client.delete("/datasets/d-1")
+        assert resp.status_code == 204
+        mock_s3.delete_objects.assert_called_once()
+        executed_sql = [str(c.args[0]) for c in mock_cursor.execute.call_args_list]
+        assert any("DELETE" in sql for sql in executed_sql)
+
+    def test_deletes_all_s3_objects_for_prefix(self, app_client):
+        """All S3 objects under the dataset prefix must appear in delete_objects."""
+        s3_path = "datasets/myds/deadbeef1234/manifest.json"
+        mock_conn, mock_cursor = self._make_delete_mock(s3_path=s3_path)
+        mock_s3 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{
+            "Contents": [
+                {"Key": "datasets/myds/deadbeef1234/manifest.json"},
+                {"Key": "datasets/myds/deadbeef1234/split_1/train.parquet"},
+                {"Key": "datasets/myds/deadbeef1234/split_1/test.parquet"},
+            ]
+        }]
+        mock_s3.get_paginator.return_value = mock_paginator
+        with patch("psycopg2.connect", return_value=mock_conn), \
+             patch("main.get_s3", return_value=mock_s3):
+            resp = app_client.delete("/datasets/d-1")
+        assert resp.status_code == 204
+        call_kwargs = mock_s3.delete_objects.call_args[1]
+        deleted_keys = [o["Key"] for o in call_kwargs["Delete"]["Objects"]]
+        assert "datasets/myds/deadbeef1234/split_1/train.parquet" in deleted_keys
+        assert "datasets/myds/deadbeef1234/split_1/test.parquet" in deleted_keys
+
+    def test_s3_cleanup_failure_does_not_return_500(self, app_client):
+        """DB is already committed — an S3 error must not cause a 500."""
+        mock_conn, mock_cursor = self._make_delete_mock(s3_path="datasets/test/abc123/manifest.json")
+        mock_s3 = MagicMock()
+        mock_s3.get_paginator.side_effect = RuntimeError("S3 unreachable")
+        with patch("psycopg2.connect", return_value=mock_conn), \
+             patch("main.get_s3", return_value=mock_s3):
+            resp = app_client.delete("/datasets/d-1")
         assert resp.status_code == 204
 
-    def test_returns_404_when_not_found(self, app_client, mock_db):
-        mock_conn, mock_cursor = mock_db
-        mock_cursor.rowcount = 0
-        with patch("psycopg2.connect") as mock_connect:
-            mock_c = MagicMock()
-            mock_cur = MagicMock()
-            mock_cur.__enter__ = lambda s: s
-            mock_cur.__exit__ = MagicMock(return_value=False)
-            mock_cur.rowcount = 0
-            mock_c.__enter__ = lambda s: s
-            mock_c.__exit__ = MagicMock(return_value=False)
-            mock_c.cursor.return_value = mock_cur
-            mock_connect.return_value = mock_c
+    def test_partial_s3_delete_errors_are_logged(self, app_client, caplog):
+        """Partial delete_objects failures are logged as warnings, not raised."""
+        import logging
+        mock_conn, mock_cursor = self._make_delete_mock(s3_path="datasets/test/abc123/manifest.json")
+        mock_s3 = MagicMock()
+        mock_paginator = MagicMock()
+        mock_paginator.paginate.return_value = [{"Contents": [{"Key": "datasets/test/abc123/manifest.json"}]}]
+        mock_s3.get_paginator.return_value = mock_paginator
+        mock_s3.delete_objects.return_value = {
+            "Errors": [{"Key": "datasets/test/abc123/manifest.json", "Code": "AccessDenied"}]
+        }
+        with patch("psycopg2.connect", return_value=mock_conn), \
+             patch("main.get_s3", return_value=mock_s3), \
+             caplog.at_level(logging.WARNING, logger="main"):
+            resp = app_client.delete("/datasets/d-1")
+        assert resp.status_code == 204
+        assert any("partial failure" in r.message for r in caplog.records)
+
+    def test_returns_404_when_not_found(self, app_client):
+        mock_conn, mock_cursor = self._make_delete_mock(found=False)
+        mock_s3 = MagicMock()
+        with patch("psycopg2.connect", return_value=mock_conn), \
+             patch("main.get_s3", return_value=mock_s3):
             resp = app_client.delete("/datasets/no-such-id")
         assert resp.status_code == 404
+        mock_s3.delete_objects.assert_not_called()
+
+
+class TestBuildDatasetRequestValidation:
+    def test_rejects_empty_symbols(self, app_client):
+        resp = app_client.post("/datasets/build", json={
+            "name": "test", "symbols": [],
+            "start_date": "2020-01-01", "end_date": "2024-12-31",
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_invalid_date_format(self, app_client):
+        resp = app_client.post("/datasets/build", json={
+            "name": "test", "symbols": ["SPY"],
+            "start_date": "01/01/2020", "end_date": "2024-12-31",
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_end_before_start(self, app_client):
+        resp = app_client.post("/datasets/build", json={
+            "name": "test", "symbols": ["SPY"],
+            "start_date": "2024-12-31", "end_date": "2020-01-01",
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_zero_n_splits(self, app_client):
+        resp = app_client.post("/datasets/build", json={
+            "name": "test", "symbols": ["SPY"],
+            "start_date": "2020-01-01", "end_date": "2024-12-31",
+            "n_splits": 0,
+        })
+        assert resp.status_code == 422
+
+    def test_rejects_train_frac_gte_1(self, app_client):
+        resp = app_client.post("/datasets/build", json={
+            "name": "test", "symbols": ["SPY"],
+            "start_date": "2020-01-01", "end_date": "2024-12-31",
+            "train_frac": 1.0,
+        })
+        assert resp.status_code == 422
+
+
+class TestPartialUploadCleanup:
+    def test_cleans_up_partial_uploads_on_s3_failure(self, app_client, mock_db):
+        """If upload_parquet raises on split 2, already-uploaded keys must be deleted."""
+        mock_conn, mock_cursor = mock_db
+        mock_cursor.fetchone.return_value = ("dataset-uuid-1",)
+        df = _make_feature_df(400)
+        call_count = 0
+
+        def flaky_upload(data, path):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise RuntimeError("S3 timeout")
+            return path
+
+        mock_s3 = MagicMock()
+        with patch("main.fetch_features", return_value=df), \
+             patch("main.upload_parquet", side_effect=flaky_upload), \
+             patch("main.get_s3", return_value=mock_s3):
+            resp = app_client.post("/datasets/build", json={
+                "name": "my-dataset", "symbols": ["SPY"],
+                "start_date": "2020-01-01", "end_date": "2024-12-31",
+            })
+        assert resp.status_code == 500
+        mock_s3.delete_objects.assert_called_once()
+        deleted = mock_s3.delete_objects.call_args[1]["Delete"]["Objects"]
+        assert len(deleted) == 1
+
+
+class TestListDatasetsPagination:
+    def test_accepts_limit_and_offset(self, app_client):
+        empty_df = pd.DataFrame(columns=["id", "name", "symbols",
+                                          "start_date", "end_date", "created_at"])
+        with patch("pandas.read_sql", return_value=empty_df) as mock_sql:
+            resp = app_client.get("/datasets?limit=10&offset=20")
+        assert resp.status_code == 200
+        call_args = mock_sql.call_args
+        assert call_args[1]["params"] == (10, 20)
