@@ -22,6 +22,8 @@ with workflow.unsafe.imports_passed_through():
         notify_slack,
     )
 
+_SLACK_RETRY = RetryPolicy(maximum_attempts=1)
+
 
 # ─────────────────────────────────────────
 # Training Workflow
@@ -62,19 +64,29 @@ class TrainingWorkflow:
                 notify_slack,
                 {"message": f"Training run {run_id} FAILED: {result.get('error')}"},
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_SLACK_RETRY,
             )
             return {"status": "failed", "run_id": run_id, **result}
 
         workflow.logger.info(f"Training complete: {result}")
 
+        # Guard before using artifact_path in activity params — a missing value
+        # here means rl-train returned completed without saving the model, which
+        # is a server-side bug and should surface as a clear workflow error.
+        artifact_path: str = result.get("artifact_path") or ""
+        if not artifact_path:
+            raise ValueError(
+                f"Training run {run_id} completed but rl-train returned no artifact_path"
+            )
+
         # Step 3: backtest
         backtest_result: dict = await workflow.execute_activity(
             run_backtest,
             {
-                "policy_s3_path": result["artifact_path"],
-                "symbols": params.get("symbols", ["AAPL"]),
-                "start_date": params.get("backtest_start", "2023-01-01"),
-                "end_date": params.get("backtest_end", "2023-12-31"),
+                "policy_s3_path": artifact_path,
+                "symbols":        params.get("symbols", ["AAPL"]),
+                "start_date":     params["backtest_start"],
+                "end_date":       params["backtest_end"],
             },
             start_to_close_timeout=timedelta(minutes=15),
             retry_policy=retry,
@@ -87,7 +99,7 @@ class TrainingWorkflow:
         if backtest_result.get("sharpeRatio", 0) >= sharpe_threshold:
             await workflow.execute_activity(
                 promote_policy,
-                {"run_id": run_id, "artifact_path": result["artifact_path"]},
+                {"run_id": run_id},
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=retry,
             )
@@ -104,6 +116,7 @@ class TrainingWorkflow:
             notify_slack,
             {"message": msg},
             start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=_SLACK_RETRY,
         )
 
         return {
@@ -128,11 +141,22 @@ class BacktestWorkflow:
     async def run(self, params: dict) -> dict:
         retry = RetryPolicy(maximum_attempts=3, initial_interval=timedelta(seconds=5))
 
-        result: dict = await workflow.execute_activity(
-            run_backtest,
-            params,
-            start_to_close_timeout=timedelta(minutes=15),
-            retry_policy=retry,
-        )
+        try:
+            result: dict = await workflow.execute_activity(
+                run_backtest,
+                params,
+                start_to_close_timeout=timedelta(minutes=15),
+                retry_policy=retry,
+            )
+        except Exception as exc:
+            cause = exc.__cause__ or exc
+            await workflow.execute_activity(
+                notify_slack,
+                {"message": f"Backtest failed: {cause}"},
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_SLACK_RETRY,
+            )
+            raise
+
         workflow.logger.info(f"Backtest complete: {result}")
         return result
