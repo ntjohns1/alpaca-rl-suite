@@ -7,4 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+RUN useradd -m worker
+USER worker
+
 CMD ["python", "main.py"]

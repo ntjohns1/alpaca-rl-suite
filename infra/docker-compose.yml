@@ -388,6 +388,10 @@ services:
       - TEMPORAL_TASK_QUEUE=alpaca-rl-main
       - RL_TRAIN_URL=http://rl-train:8004
       - BACKTEST_URL=http://backtest:8001
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-https://auth.nelsonjohns.com}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-alpaca-rl-suite}
+      - KC_SERVICE_CLIENT_ID=${KC_SERVICE_CLIENT_ID:-temporal-worker}
+      - KC_SERVICE_CLIENT_SECRET=${KC_SERVICE_CLIENT_SECRET:-}
     depends_on:
       - temporal
       - rl-train

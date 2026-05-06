@@ -6,6 +6,7 @@ Also exposes a minimal FastAPI health + trigger endpoint.
 import asyncio
 import logging
 import os
+import uuid
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -25,10 +26,10 @@ from activities import (
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
-TEMPORAL_ADDRESS  = os.getenv("TEMPORAL_ADDRESS",  "temporal:7233")
-TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE", "default")
-TASK_QUEUE        = os.getenv("TEMPORAL_TASK_QUEUE", "alpaca-rl-main")
-WORKER_PORT       = int(os.getenv("TEMPORAL_WORKER_PORT", "8010"))
+TEMPORAL_ADDRESS   = os.getenv("TEMPORAL_ADDRESS",    "temporal:7233")
+TEMPORAL_NAMESPACE = os.getenv("TEMPORAL_NAMESPACE",  "default")
+TASK_QUEUE         = os.getenv("TEMPORAL_TASK_QUEUE", "alpaca-rl-main")
+WORKER_PORT        = int(os.getenv("TEMPORAL_WORKER_PORT", "8010"))
 
 # ─────────────────────────────────────────
 # FastAPI app (health + manual trigger)
@@ -40,8 +41,8 @@ class TrainRequest(BaseModel):
     name: str
     symbols: list[str] = ["AAPL"]
     totalTimesteps: int = 100_000
-    backtest_start: str = "2023-01-01"
-    backtest_end: str   = "2023-12-31"
+    backtest_start: str
+    backtest_end: str
     sharpe_threshold: float = 0.5
 
 
@@ -49,19 +50,21 @@ class BacktestRequest(BaseModel):
     name: str
     symbols: list[str] = ["AAPL"]
     policy_s3_path: str
-    start_date: str = "2023-01-01"
-    end_date: str   = "2023-12-31"
+    start_date: str
+    end_date: str
 
 
 _temporal_client: Client | None = None
+_client_lock = asyncio.Lock()
 
 
 async def get_client() -> Client:
     global _temporal_client
-    if _temporal_client is None:
-        _temporal_client = await Client.connect(
-            TEMPORAL_ADDRESS, namespace=TEMPORAL_NAMESPACE
-        )
+    async with _client_lock:
+        if _temporal_client is None:
+            _temporal_client = await Client.connect(
+                TEMPORAL_ADDRESS, namespace=TEMPORAL_NAMESPACE
+            )
     return _temporal_client
 
 
@@ -77,7 +80,7 @@ async def trigger_training(req: TrainRequest):
     handle = await client.start_workflow(
         TrainingWorkflow.run,
         req.model_dump(),
-        id=f"train-{req.name}-{asyncio.get_event_loop().time():.0f}",
+        id=f"train-{req.name}-{uuid.uuid4()}",
         task_queue=TASK_QUEUE,
     )
     return {"workflowId": handle.id, "runId": handle.result_run_id}
@@ -90,7 +93,7 @@ async def trigger_backtest(req: BacktestRequest):
     handle = await client.start_workflow(
         BacktestWorkflow.run,
         req.model_dump(),
-        id=f"backtest-{req.name}-{asyncio.get_event_loop().time():.0f}",
+        id=f"backtest-{req.name}-{uuid.uuid4()}",
         task_queue=TASK_QUEUE,
     )
     return {"workflowId": handle.id, "runId": handle.result_run_id}

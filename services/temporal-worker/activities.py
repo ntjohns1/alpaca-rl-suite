@@ -17,7 +17,41 @@ BACKTEST_URL     = os.getenv("BACKTEST_URL",     "http://backtest:8001")
 ORDERS_URL       = os.getenv("ORDERS_URL",       "http://orders:3004")
 SLACK_WEBHOOK    = os.getenv("SLACK_WEBHOOK_URL", "")
 
+KEYCLOAK_URL    = os.getenv("KEYCLOAK_URL",    "https://auth.nelsonjohns.com")
+KEYCLOAK_REALM  = os.getenv("KEYCLOAK_REALM",  "alpaca-rl-suite")
+KC_CLIENT_ID     = os.getenv("KC_SERVICE_CLIENT_ID",     "")
+KC_CLIENT_SECRET = os.getenv("KC_SERVICE_CLIENT_SECRET", "")
+
 _HTTP_TIMEOUT = httpx.Timeout(30.0)
+
+# ── Token cache ───────────────────────────────────────────────────────────────
+
+_token_lock  = asyncio.Lock()
+_token_cache: dict = {"token": None, "expires_at": 0.0}
+
+
+async def _auth_headers() -> dict:
+    """Return Authorization header with a valid service-account Bearer token."""
+    async with _token_lock:
+        if _token_cache["token"] and time.monotonic() < _token_cache["expires_at"] - 30:
+            return {"Authorization": f"Bearer {_token_cache['token']}"}
+
+        token_url = (
+            f"{KEYCLOAK_URL}/realms/{KEYCLOAK_REALM}"
+            "/protocol/openid-connect/token"
+        )
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            resp = await client.post(token_url, data={
+                "grant_type":    "client_credentials",
+                "client_id":     KC_CLIENT_ID,
+                "client_secret": KC_CLIENT_SECRET,
+            })
+            resp.raise_for_status()
+            data = resp.json()
+
+        _token_cache["token"]      = data["access_token"]
+        _token_cache["expires_at"] = time.monotonic() + data.get("expires_in", 300)
+        return {"Authorization": f"Bearer {_token_cache['token']}"}
 
 
 # ─────────────────────────────────────────
@@ -26,9 +60,10 @@ _HTTP_TIMEOUT = httpx.Timeout(30.0)
 
 @activity.defn
 async def start_training_run(params: dict) -> str:
-    """POST /train/run → returns run_id."""
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        resp = await client.post(f"{RL_TRAIN_URL}/train/run", json=params)
+    """POST /rl/train → returns run_id."""
+    headers = await _auth_headers()
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=headers) as client:
+        resp = await client.post(f"{RL_TRAIN_URL}/rl/train", json=params)
         resp.raise_for_status()
         data = resp.json()
         run_id: str = data["runId"]
@@ -39,17 +74,18 @@ async def start_training_run(params: dict) -> str:
 @activity.defn
 async def poll_training_run(params: dict) -> dict:
     """
-    Poll GET /train/run/{run_id} until status is completed/failed
+    Poll GET /rl/runs/{run_id} until status is completed/failed
     or timeout_s is exceeded.
     """
-    run_id: str   = params["run_id"]
+    run_id: str    = params["run_id"]
     timeout_s: int = params.get("timeout_s", 21600)
     poll_interval  = 30  # seconds
 
     deadline = time.monotonic() + timeout_s
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+    headers = await _auth_headers()
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=headers) as client:
         while time.monotonic() < deadline:
-            resp = await client.get(f"{RL_TRAIN_URL}/train/run/{run_id}")
+            resp = await client.get(f"{RL_TRAIN_URL}/rl/runs/{run_id}")
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status")
@@ -75,8 +111,8 @@ async def run_backtest(params: dict) -> dict:
     payload = {
         "name":           params.get("name", "workflow-backtest"),
         "symbols":        params.get("symbols", ["AAPL"]),
-        "startDate":      params.get("start_date", "2023-01-01"),
-        "endDate":        params.get("end_date",   "2023-12-31"),
+        "startDate":      params["start_date"],
+        "endDate":        params["end_date"],
         "policyS3Path":   params.get("policy_s3_path"),
         "initialCapital": params.get("initial_capital", 100_000),
     }
@@ -94,16 +130,26 @@ async def run_backtest(params: dict) -> dict:
 
 @activity.defn
 async def promote_policy(params: dict) -> dict:
-    """POST /train/run/{run_id}/promote → marks policy as promoted in DB."""
+    """
+    Resolve the policy_bundle for run_id, then POST /rl/policies/{policy_id}/promote.
+    Requires run_id in params.
+    """
     run_id: str = params["run_id"]
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-        resp = await client.post(
-            f"{RL_TRAIN_URL}/train/run/{run_id}/promote",
-            json={"artifactPath": params.get("artifact_path")},
-        )
+    headers = await _auth_headers()
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=headers) as client:
+        # Resolve policy_id: list all policies and match on training_run_id
+        resp = await client.get(f"{RL_TRAIN_URL}/rl/policies")
+        resp.raise_for_status()
+        policies = resp.json()
+        matching = [p for p in policies if str(p.get("training_run_id")) == str(run_id)]
+        if not matching:
+            raise RuntimeError(f"No policy_bundle found for run_id={run_id}")
+        policy_id = matching[0]["id"]
+
+        resp = await client.post(f"{RL_TRAIN_URL}/rl/policies/{policy_id}/promote")
         resp.raise_for_status()
         data = resp.json()
-        log.info(f"[promote_policy] run_id={run_id} promoted={data}")
+        log.info(f"[promote_policy] run_id={run_id} policy_id={policy_id} promoted={data}")
         return data
 
 
