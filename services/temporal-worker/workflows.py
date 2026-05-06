@@ -70,11 +70,20 @@ class TrainingWorkflow:
 
         workflow.logger.info(f"Training complete: {result}")
 
+        # Guard before using artifact_path in activity params — a missing value
+        # here means rl-train returned completed without saving the model, which
+        # is a server-side bug and should surface as a clear workflow error.
+        artifact_path: str = result.get("artifact_path") or ""
+        if not artifact_path:
+            raise ValueError(
+                f"Training run {run_id} completed but rl-train returned no artifact_path"
+            )
+
         # Step 3: backtest
         backtest_result: dict = await workflow.execute_activity(
             run_backtest,
             {
-                "policy_s3_path": result["artifact_path"],
+                "policy_s3_path": artifact_path,
                 "symbols":        params.get("symbols", ["AAPL"]),
                 "start_date":     params["backtest_start"],
                 "end_date":       params["backtest_end"],
@@ -140,9 +149,10 @@ class BacktestWorkflow:
                 retry_policy=retry,
             )
         except Exception as exc:
+            cause = exc.__cause__ or exc
             await workflow.execute_activity(
                 notify_slack,
-                {"message": f"Backtest failed: {exc}"},
+                {"message": f"Backtest failed: {cause}"},
                 start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=_SLACK_RETRY,
             )

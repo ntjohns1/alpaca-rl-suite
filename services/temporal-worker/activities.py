@@ -12,12 +12,12 @@ from temporalio import activity
 
 log = logging.getLogger(__name__)
 
-RL_TRAIN_URL     = os.getenv("RL_TRAIN_URL",    "http://rl-train:8004")
-BACKTEST_URL     = os.getenv("BACKTEST_URL",     "http://backtest:8001")
-ORDERS_URL       = os.getenv("ORDERS_URL",       "http://orders:3004")
-SLACK_WEBHOOK    = os.getenv("SLACK_WEBHOOK_URL", "")
+RL_TRAIN_URL  = os.getenv("RL_TRAIN_URL",  "http://rl-train:8004")
+BACKTEST_URL  = os.getenv("BACKTEST_URL",  "http://backtest:8001")
+ORDERS_URL    = os.getenv("ORDERS_URL",    "http://orders:3004")
+SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL", "")
 
-KEYCLOAK_URL    = os.getenv("KEYCLOAK_URL",    "https://auth.nelsonjohns.com")
+KEYCLOAK_URL    = os.getenv("KEYCLOAK_URL",    "")
 KEYCLOAK_REALM  = os.getenv("KEYCLOAK_REALM",  "alpaca-rl-suite")
 KC_CLIENT_ID     = os.getenv("KC_SERVICE_CLIENT_ID",     "")
 KC_CLIENT_SECRET = os.getenv("KC_SERVICE_CLIENT_SECRET", "")
@@ -58,12 +58,22 @@ async def _auth_headers() -> dict:
 # Training activities
 # ─────────────────────────────────────────
 
+# Fields accepted by rl-train's TrainingRequest schema.
+_RL_TRAIN_FIELDS = {
+    "name", "symbols", "totalTimesteps", "tradingDays", "tradingCostBps",
+    "timeCostBps", "gamma", "learningRate", "batchSize", "replayCapacity",
+    "learningStarts", "architecture", "tau", "explorationFraction",
+    "epsilonStart", "epsilonEnd", "seed", "datasetId",
+}
+
+
 @activity.defn
 async def start_training_run(params: dict) -> str:
     """POST /rl/train → returns run_id."""
+    payload = {k: v for k, v in params.items() if k in _RL_TRAIN_FIELDS}
     headers = await _auth_headers()
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=headers) as client:
-        resp = await client.post(f"{RL_TRAIN_URL}/rl/train", json=params)
+        resp = await client.post(f"{RL_TRAIN_URL}/rl/train", json=payload)
         resp.raise_for_status()
         data = resp.json()
         run_id: str = data["runId"]
@@ -82,10 +92,11 @@ async def poll_training_run(params: dict) -> dict:
     poll_interval  = 30  # seconds
 
     deadline = time.monotonic() + timeout_s
-    headers = await _auth_headers()
-    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         while time.monotonic() < deadline:
-            resp = await client.get(f"{RL_TRAIN_URL}/rl/runs/{run_id}")
+            # Refresh token on every iteration — tokens expire mid-poll.
+            headers = await _auth_headers()
+            resp = await client.get(f"{RL_TRAIN_URL}/rl/runs/{run_id}", headers=headers)
             resp.raise_for_status()
             data = resp.json()
             status = data.get("status")
@@ -141,9 +152,19 @@ async def promote_policy(params: dict) -> dict:
         resp = await client.get(f"{RL_TRAIN_URL}/rl/policies")
         resp.raise_for_status()
         policies = resp.json()
+
+        if not isinstance(policies, list):
+            raise RuntimeError(
+                f"Unexpected /rl/policies response shape ({type(policies).__name__}): {policies!r}"
+            )
         matching = [p for p in policies if str(p.get("training_run_id")) == str(run_id)]
-        if not matching:
+        if len(matching) == 0:
             raise RuntimeError(f"No policy_bundle found for run_id={run_id}")
+        if len(matching) > 1:
+            ids = [p["id"] for p in matching]
+            raise RuntimeError(
+                f"Ambiguous promotion: {len(matching)} policy_bundles match run_id={run_id}: {ids}"
+            )
         policy_id = matching[0]["id"]
 
         resp = await client.post(f"{RL_TRAIN_URL}/rl/policies/{policy_id}/promote")
