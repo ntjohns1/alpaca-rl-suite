@@ -48,7 +48,7 @@ const ConfigSchema = z.object({
   // Maximum age of a portfolio_value sync before /risk/check treats it as stale (seconds).
   MAX_PORTFOLIO_STALENESS_S: z.coerce.number().positive().default(3600),
   // How often the risk service polls portfolio/account to refresh portfolio_value (ms).
-  // Must be less than half of MAX_PORTFOLIO_STALENESS_S * 1000; validated at startup.
+  // Must be less than half of MAX_PORTFOLIO_STALENESS_S * 1000; enforced by loadConfig().
   RISK_PORTFOLIO_SYNC_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
 
   // Trading mode
@@ -68,6 +68,7 @@ const ConfigSchema = z.object({
   PORTFOLIO_URL: z.string().default('http://localhost:3004'),
   ORDERS_URL: z.string().default('http://localhost:3005'),
   RISK_URL: z.string().default('http://localhost:3006'),
+  RL_TRAIN_URL: z.string().default('http://localhost:8004'),
   RL_INFER_URL: z.string().default('http://localhost:8005'),
   BACKTEST_URL: z.string().default('http://localhost:8001'),
   FEATURE_BUILDER_URL: z.string().default('http://localhost:8002'),
@@ -80,7 +81,22 @@ let _config: Config | null = null;
 export function loadConfig(): Config {
   if (_config) return _config;
 
-  const result = ConfigSchema.safeParse(process.env);
+  // Apply cross-field validation via superRefine here rather than on ConfigSchema
+  // itself; attaching it to the schema would change its type from ZodObject to
+  // ZodEffects and break downstream .pick() usage in service-specific configs.
+  const result = ConfigSchema.superRefine((data, ctx) => {
+    const halfStalenessMs = (data.MAX_PORTFOLIO_STALENESS_S * 1000) / 2;
+    if (data.RISK_PORTFOLIO_SYNC_INTERVAL_MS >= halfStalenessMs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['RISK_PORTFOLIO_SYNC_INTERVAL_MS'],
+        message:
+          `Must be less than half of MAX_PORTFOLIO_STALENESS_S * 1000 ` +
+          `(${halfStalenessMs}ms). Got ${data.RISK_PORTFOLIO_SYNC_INTERVAL_MS}ms.`,
+      });
+    }
+  }).safeParse(process.env);
+
   if (!result.success) {
     const missing = result.error.issues
       .map((i) => `  ${i.path.join('.')}: ${i.message}`)

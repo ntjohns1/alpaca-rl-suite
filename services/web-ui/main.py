@@ -98,28 +98,50 @@ async def get_user_info(user: dict = Depends(get_current_user)):
 
 
 # ─────────────────────────────────────────
-# API Proxy — forwards /api/{service}/... to the correct backend
+# Non-proxied API endpoints — must be defined before the catch-all proxy
 # ─────────────────────────────────────────
+@app.get("/api/config")
+async def get_config():
+    """Return UI configuration (Grafana URL, etc.)."""
+    return {
+        "grafanaUrl": os.getenv("GRAFANA_EXTERNAL_URL", "http://localhost:3100"),
+    }
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok", "service": "web-ui"}
+
+
+# ─────────────────────────────────────────
+# API Proxy — forwards /api/<service>[/<path>] to the correct backend.
+# Using {full_path:path} so bare service roots (e.g. GET /api/datasets)
+# match alongside sub-paths (e.g. POST /api/datasets/build).
+# ─────────────────────────────────────────
+_NON_PROXY = {"auth", "config", "health"}
+
+
 @app.api_route(
-    "/api/{service}/{path:path}",
+    "/api/{full_path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
 )
 async def proxy(
-    service: str,
-    path: str,
+    full_path: str,
     request: Request,
     user: dict = Depends(get_current_user),
 ):
     """Reverse-proxy authenticated API requests to the appropriate microservice."""
-    if service == "auth":
+    parts = full_path.split("/", 1)
+    service = parts[0]
+    path = parts[1] if len(parts) > 1 else ""
+
+    if service in _NON_PROXY:
         return JSONResponse({"error": "Not found"}, status_code=404)
 
     target_base = SERVICE_MAP.get(service)
     if not target_base:
         return JSONResponse({"error": f"Unknown service: {service}"}, status_code=404)
 
-    # Forward path verbatim under the service namespace (matches the project
-    # convention that backend routes are mounted under their own service name).
     upstream_path = f"/{service}" if not path else f"/{service}/{path}"
     url = f"{target_base}{upstream_path}"
 
@@ -166,19 +188,6 @@ async def proxy(
         status_code=upstream_resp.status_code,
         headers=response_headers,
     )
-
-
-@app.get("/api/config")
-async def get_config():
-    """Return UI configuration (Grafana URL, etc.)."""
-    return {
-        "grafanaUrl": os.getenv("GRAFANA_EXTERNAL_URL", "http://localhost:3100"),
-    }
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok", "service": "web-ui"}
 
 
 # ─────────────────────────────────────────
