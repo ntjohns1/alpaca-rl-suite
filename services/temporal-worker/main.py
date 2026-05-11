@@ -11,7 +11,8 @@ import uuid
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from temporalio.client import Client, WorkflowIDReusePolicy
+from temporalio.client import Client
+from temporalio.common import WorkflowIDReusePolicy
 from temporalio.worker import Worker
 
 from workflows import TrainingWorkflow, BacktestWorkflow
