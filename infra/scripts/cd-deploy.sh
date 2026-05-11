@@ -46,7 +46,7 @@ echo ""
 
 # ── Validate required vars ─────────────────────────────────────────────
 MISSING=()
-for var in DB_PASSWORD S3_ACCESS_KEY S3_SECRET_KEY JWT_SECRET ALPACA_API_KEY ALPACA_API_SECRET GF_ADMIN_PASSWORD; do
+for var in DB_PASSWORD S3_ACCESS_KEY S3_SECRET_KEY JWT_SECRET ALPACA_API_KEY ALPACA_API_SECRET GF_ADMIN_PASSWORD KC_SERVICE_CLIENT_ID KC_SERVICE_CLIENT_SECRET; do
   if [ -z "${!var:-}" ] || [ "${!var}" = "CHANGE_ME" ]; then
     MISSING+=("$var")
   fi
