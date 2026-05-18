@@ -416,6 +416,8 @@ services:
       RL_TRAIN_SERVICE_URL: http://rl-train:8004
       DATASET_SERVICE_URL: http://dataset-builder:8003
       DASHBOARD_SERVICE_URL: http://dashboard:8020
+      MARKET_SERVICE_URL: http://market-ingest:3003
+      FEATURE_SERVICE_URL: http://feature-builder:8002
       GRAFANA_URL: http://grafana:3000
       GRAFANA_EXTERNAL_URL: ${GRAFANA_EXTERNAL_URL:-https://grafana.nelsonjohns.com}
       KEYCLOAK_URL: ${KEYCLOAK_URL:?KEYCLOAK_URL must be set}
