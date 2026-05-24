@@ -37,80 +37,58 @@ BASE_CONFIG = {
 # ─── orchestrate_kaggle_training ─────────────────────────────────────────────
 
 class TestOrchestrateKaggleTraining:
+    """Tests for the simplified orchestration flow: export → upload → push → done."""
 
-    def _run(self, config=None, extra_patches=None):
+    def _run(self, config=None, push_return=None, export_side_effect=None, push_side_effect=None):
         cfg = config or BASE_CONFIG.copy()
-        mock_conn, mock_cursor = _mock_conn()
-        mock_cursor.fetchone.return_value = ("policy-uuid-1",)
-
-        job_row_active = {
-            "id": "job-1", "status": "training_on_kaggle", "approval_status": "pending",
-            "config": cfg, "metadata": None,
+        push_ret = push_return or {
+            "kernel_url": "https://kaggle.com/code/testuser/alpaca-rl-training",
+            "version_number": 3,
         }
 
         with patch("main.update_kaggle_job") as mock_update, \
-             patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "SPY"}), \
+             patch("main.export_training_dataset",
+                   side_effect=export_side_effect,
+                   return_value={"rows": 400, "symbol": "SPY"}) if not export_side_effect else \
+             patch("main.export_training_dataset", side_effect=export_side_effect) as _, \
              patch("main.create_kaggle_dataset", return_value={"slug": "alpaca-rl-spy"}), \
-             patch("main.push_kaggle_kernel", return_value={
-                 "kernel_url": "https://kaggle.com/kernels/alpaca-rl-training"
-             }), \
-             patch("main.get_kernel_status", return_value="complete"), \
-             patch("main.get_job_row", return_value=job_row_active), \
-             patch("main.download_model_from_kaggle"), \
-             patch("main.upload_model_to_minio", return_value="models/kaggle/job-1/policy_best.zip"), \
-             patch("main.trigger_backtest_for_job"), \
-             patch("main.get_conn", return_value=mock_conn), \
+             patch("main.push_kaggle_kernel",
+                   side_effect=push_side_effect,
+                   return_value=push_ret) if not push_side_effect else \
+             patch("main.push_kaggle_kernel", side_effect=push_side_effect) as _, \
              patch("os.unlink"), \
-             patch("os.listdir", return_value=["policy_best.zip"]), \
-             patch("tempfile.NamedTemporaryFile") as mock_tmp, \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
-             patch("time.sleep"):
+             patch("tempfile.NamedTemporaryFile") as mock_tmp:
 
             mock_tmp.return_value.__enter__ = lambda s: s
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
             mock_tmp.return_value.name = "/tmp/data.csv"
-
-            mock_tmpdir.return_value.__enter__ = lambda s: "/tmp/model_dir"
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
 
             from main import orchestrate_kaggle_training
             orchestrate_kaggle_training("job-1", cfg)
 
         return mock_update
 
-    def test_full_happy_path_reaches_pending_approval(self):
-        mock_update = self._run()
-        statuses = [c[0][1] for c in mock_update.call_args_list]
-        assert "pending_approval" in statuses
-
-    def test_triggers_backtest_after_upload(self):
-        mock_conn, mock_cursor = _mock_conn()
-        mock_cursor.fetchone.return_value = ("pol-1",)
-        job_row_active = {"id": "job-1", "status": "training_on_kaggle", "approval_status": "pending", "config": BASE_CONFIG, "metadata": None}
-
-        with patch("main.update_kaggle_job"), \
-             patch("main.export_training_dataset", return_value={"rows": 400}), \
-             patch("main.create_kaggle_dataset", return_value={}), \
-             patch("main.push_kaggle_kernel", return_value={"kernel_url": "https://kaggle.com/k"}), \
-             patch("main.get_kernel_status", return_value="complete"), \
-             patch("main.get_job_row", return_value=job_row_active), \
-             patch("main.download_model_from_kaggle"), \
-             patch("main.upload_model_to_minio", return_value="s3://path"), \
-             patch("main.trigger_backtest_for_job") as mock_bt, \
-             patch("main.get_conn", return_value=mock_conn), \
+    def test_happy_path_reaches_submitted_to_kaggle(self):
+        """Orchestration ends at submitted_to_kaggle (no polling)."""
+        with patch("main.update_kaggle_job") as mock_update, \
+             patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "SPY"}), \
+             patch("main.create_kaggle_dataset", return_value={"slug": "alpaca-rl-spy"}), \
+             patch("main.push_kaggle_kernel", return_value={
+                 "kernel_url": "https://kaggle.com/code/testuser/alpaca-rl-training",
+                 "version_number": 3,
+             }), \
              patch("os.unlink"), \
-             patch("os.listdir", return_value=["policy_best.zip"]), \
-             patch("tempfile.NamedTemporaryFile") as mock_tmp, \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
-             patch("time.sleep"):
+             patch("tempfile.NamedTemporaryFile") as mock_tmp:
             mock_tmp.return_value.__enter__ = lambda s: s
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
             mock_tmp.return_value.name = "/tmp/data.csv"
-            mock_tmpdir.return_value.__enter__ = lambda s: "/tmp/dir"
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
             from main import orchestrate_kaggle_training
             orchestrate_kaggle_training("job-1", BASE_CONFIG.copy())
-        mock_bt.assert_called_once()
+        statuses = [c[0][1] for c in mock_update.call_args_list]
+        assert "submitted_to_kaggle" in statuses
+        # No polling or model download should happen
+        assert "training_on_kaggle" not in statuses
+        assert "downloading_model" not in statuses
 
     def test_marks_failed_on_export_error(self):
         with patch("main.update_kaggle_job") as mock_update, \
@@ -126,66 +104,16 @@ class TestOrchestrateKaggleTraining:
         statuses = [c[0][1] for c in mock_update.call_args_list]
         assert "failed" in statuses
 
-    def test_stops_polling_when_job_cancelled(self):
-        cancelled_row = {"id": "job-1", "status": "cancelled", "approval_status": "pending", "config": BASE_CONFIG, "metadata": None}
+    def test_marks_failed_on_push_error(self):
         with patch("main.update_kaggle_job") as mock_update, \
              patch("main.export_training_dataset", return_value={"rows": 400}), \
              patch("main.create_kaggle_dataset", return_value={}), \
-             patch("main.push_kaggle_kernel", return_value={"kernel_url": "https://kaggle.com/k"}), \
-             patch("main.get_kernel_status", return_value="running"), \
-             patch("main.get_job_row", return_value=cancelled_row), \
-             patch("main.get_conn"), \
+             patch("main.push_kaggle_kernel", side_effect=RuntimeError("Kaggle push failed")), \
              patch("os.unlink"), \
-             patch("tempfile.NamedTemporaryFile") as mock_tmp, \
-             patch("time.sleep"):
+             patch("tempfile.NamedTemporaryFile") as mock_tmp:
             mock_tmp.return_value.__enter__ = lambda s: s
             mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
             mock_tmp.return_value.name = "/tmp/data.csv"
-            from main import orchestrate_kaggle_training
-            orchestrate_kaggle_training("job-1", BASE_CONFIG.copy())
-        statuses = [c[0][1] for c in mock_update.call_args_list]
-        assert "failed" not in statuses
-
-    def test_marks_failed_on_kernel_error(self):
-        job_row_active = {"id": "job-1", "status": "training_on_kaggle", "approval_status": "pending", "config": BASE_CONFIG, "metadata": None}
-        with patch("main.update_kaggle_job") as mock_update, \
-             patch("main.export_training_dataset", return_value={"rows": 400}), \
-             patch("main.create_kaggle_dataset", return_value={}), \
-             patch("main.push_kaggle_kernel", return_value={"kernel_url": "https://kaggle.com/k"}), \
-             patch("main.get_kernel_status", return_value="error"), \
-             patch("main.get_job_row", return_value=job_row_active), \
-             patch("main.get_conn"), \
-             patch("os.unlink"), \
-             patch("tempfile.NamedTemporaryFile") as mock_tmp, \
-             patch("time.sleep"):
-            mock_tmp.return_value.__enter__ = lambda s: s
-            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
-            mock_tmp.return_value.name = "/tmp/data.csv"
-            from main import orchestrate_kaggle_training
-            orchestrate_kaggle_training("job-1", BASE_CONFIG.copy())
-        statuses = [c[0][1] for c in mock_update.call_args_list]
-        assert "failed" in statuses
-
-    def test_marks_failed_when_no_zip_found(self):
-        job_row_active = {"id": "job-1", "status": "training_on_kaggle", "approval_status": "pending", "config": BASE_CONFIG, "metadata": None}
-        with patch("main.update_kaggle_job") as mock_update, \
-             patch("main.export_training_dataset", return_value={"rows": 400}), \
-             patch("main.create_kaggle_dataset", return_value={}), \
-             patch("main.push_kaggle_kernel", return_value={"kernel_url": "https://kaggle.com/k"}), \
-             patch("main.get_kernel_status", return_value="complete"), \
-             patch("main.get_job_row", return_value=job_row_active), \
-             patch("main.download_model_from_kaggle"), \
-             patch("main.get_conn"), \
-             patch("os.unlink"), \
-             patch("os.listdir", return_value=[]),  \
-             patch("tempfile.NamedTemporaryFile") as mock_tmp, \
-             patch("tempfile.TemporaryDirectory") as mock_tmpdir, \
-             patch("time.sleep"):
-            mock_tmp.return_value.__enter__ = lambda s: s
-            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
-            mock_tmp.return_value.name = "/tmp/data.csv"
-            mock_tmpdir.return_value.__enter__ = lambda s: "/tmp/dir"
-            mock_tmpdir.return_value.__exit__ = MagicMock(return_value=False)
             from main import orchestrate_kaggle_training
             orchestrate_kaggle_training("job-1", BASE_CONFIG.copy())
         statuses = [c[0][1] for c in mock_update.call_args_list]
@@ -383,6 +311,7 @@ class TestPushKaggleKernel:
         assert len(push_call) == 1
         body = push_call[0][1]["json"]
         assert body["id"] == 120470939
+        assert body["slug"] == "alpaca-rl-training"
         assert "newTitle" not in body
         assert result["version_number"] == 4
 
@@ -394,3 +323,56 @@ class TestPushKaggleKernel:
         import pytest
         with pytest.raises(FileNotFoundError):
             push_kaggle_kernel("alpaca-rl-training", "alpaca-rl-spy")
+
+
+class TestDownloadModelFromKaggle:
+    def test_downloads_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+
+        mock_dl = MagicMock()
+        mock_dl.raise_for_status = MagicMock()
+        mock_dl.iter_content = MagicMock(return_value=[b"model-data"])
+
+        with patch("main.kaggle_request", return_value={
+            "files": [{"url": "https://gcs.example/model.zip", "fileName": "policy_best.zip"}]
+        }), patch("requests.get", return_value=mock_dl):
+            from main import download_model_from_kaggle
+            download_model_from_kaggle("alpaca-rl-training", str(tmp_path))
+
+        assert (tmp_path / "policy_best.zip").exists()
+
+    def test_raises_on_no_files(self, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+
+        with patch("main.kaggle_request", return_value={"files": []}):
+            from main import download_model_from_kaggle
+            with pytest.raises(ValueError, match="No output files"):
+                download_model_from_kaggle("alpaca-rl-training", "/tmp/out")
+
+    def test_raises_when_all_urls_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+
+        with patch("main.kaggle_request", return_value={
+            "files": [{"fileName": "model.zip", "url": ""}]
+        }):
+            from main import download_model_from_kaggle
+            with pytest.raises(ValueError, match="lacked download URLs"):
+                download_model_from_kaggle("alpaca-rl-training", str(tmp_path))
+
+
+class TestUploadModelToMinio:
+    def test_uploads_to_s3(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("main.S3_BUCKET", "test-bucket")
+        model_file = tmp_path / "model.zip"
+        model_file.write_bytes(b"fake-model")
+
+        mock_s3 = MagicMock()
+        with patch("main.get_s3", return_value=mock_s3):
+            from main import upload_model_to_minio
+            result = upload_model_to_minio(str(model_file), "models/test/model.zip")
+
+        assert result == "s3://test-bucket/models/test/model.zip"
+        mock_s3.put_object.assert_called_once()

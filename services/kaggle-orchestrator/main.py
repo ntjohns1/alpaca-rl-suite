@@ -14,7 +14,6 @@ import hashlib
 import os
 import sys
 import tempfile
-import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -51,7 +50,6 @@ S3_SECRET_KEY            = os.getenv("S3_SECRET_KEY", "minioadmin")
 KAGGLE_API_TOKEN         = os.getenv("KAGGLE_API_TOKEN", "")
 KAGGLE_USERNAME          = os.getenv("KAGGLE_USERNAME", "")
 KAGGLE_ORCHESTRATOR_PORT = int(os.getenv("KAGGLE_ORCHESTRATOR_PORT", "8011"))
-KAGGLE_POLL_INTERVAL_S   = int(os.getenv("KAGGLE_POLL_INTERVAL_S", "60"))
 BACKTEST_SERVICE_URL     = os.getenv("BACKTEST_SERVICE_URL", "http://backtest:8001")
 
 KAGGLE_API_BASE = "https://www.kaggle.com/api/v1"
@@ -276,6 +274,7 @@ def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
     kernel_id = _get_kernel_id(kernel_slug)
     if kernel_id is not None:
         body["id"] = kernel_id
+        body["slug"] = kernel_slug
         log.info("Pushing to existing kernel ID %d (%s)", kernel_id, kernel_slug)
     else:
         body["newTitle"] = "Alpaca RL Training"
@@ -296,14 +295,11 @@ def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
     }
 
 
-def get_kernel_status(kernel_slug: str) -> str:
-    """Poll Kaggle for kernel run status. Returns: running|complete|error|cancelAcknowledged"""
-    try:
-        data = kaggle_request("GET", f"/kernels/{KAGGLE_USERNAME}/{kernel_slug}")
-        return (data.get("currentRunningVersion") or {}).get("status", "unknown")
-    except Exception as e:
-        log.warning("Kernel status poll failed: %s", e)
-        return "unknown"
+    # NOTE: Kaggle v1 /kernels/status/ endpoint is unavailable with current
+    # auth tokens (returns HTML 404).  Automated status polling has been
+    # removed.  Use the /kaggle/jobs/{id}/complete endpoint to manually
+    # trigger model download after confirming the kernel finished on
+    # kaggle.com.  See ALPCA-35 for the broader simplification plan.
 
 
 # ─────────────────────────────────────────
@@ -459,74 +455,22 @@ def orchestrate_kaggle_training(job_id: str, config: dict):
             except OSError:
                 pass
 
-        # 3. Push kernel
+        # 3. Push kernel to Kaggle
         update_kaggle_job(job_id, "triggering_kernel", {"dataset_info": dataset_info})
         kernel_info = push_kaggle_kernel(kernel_slug, dataset_slug)
-        update_kaggle_job(job_id, "training_on_kaggle", {
+        update_kaggle_job(job_id, "submitted_to_kaggle", {
             "dataset_info": dataset_info,
             "kernel_info": kernel_info,
             "kaggle_url": kernel_info["kernel_url"],
         })
-        log.info(f"[{job_id}] Training started on Kaggle: {kernel_info['kernel_url']}")
-
-        # 4. Poll for completion
-        max_polls = int(os.getenv("KAGGLE_MAX_POLLS", "120"))  # 2h at 60s interval
-        for _ in range(max_polls):
-            # Check if job was cancelled
-            row = get_job_row(job_id)
-            if row["status"] == "cancelled":
-                log.info(f"[{job_id}] Job cancelled by user")
-                return
-
-            k_status = get_kernel_status(kernel_slug)
-            log.info(f"[{job_id}] Kaggle kernel status: {k_status}")
-            if k_status in ("complete",):
-                break
-            if k_status in ("error", "cancelAcknowledged"):
-                raise RuntimeError(f"Kaggle kernel finished with status: {k_status}")
-            time.sleep(KAGGLE_POLL_INTERVAL_S)
-        else:
-            raise TimeoutError("Kaggle kernel did not complete within the polling window")
-
-        # 5. Download model → MinIO
-        update_kaggle_job(job_id, "downloading_model")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            download_model_from_kaggle(kernel_slug, tmpdir)
-            model_files = [f for f in os.listdir(tmpdir) if f.endswith(".zip")]
-            if not model_files:
-                raise ValueError("No model .zip found in Kaggle output")
-            model_path = os.path.join(tmpdir, model_files[0])
-
-            update_kaggle_job(job_id, "uploading_model")
-            s3_key   = f"models/kaggle/{job_id}/policy_best.zip"
-            s3_path  = upload_model_to_minio(model_path, s3_key)
-
-        # 6. Register policy in DB (unpromoted — awaits approval)
-        with get_conn() as conn:
-            with conn.cursor() as cur:
-                # Insert a policy_bundle row linked to the kaggle job
-                # training_run_id is NULL for Kaggle-sourced jobs
-                cur.execute(
-                    """INSERT INTO policy_bundle
-                       (training_run_id, name, version, s3_path, config, metrics,
-                        promoted, approval_status)
-                       VALUES (NULL, %s, '1.0', %s, %s, '{}', FALSE, 'pending')
-                       RETURNING id""",
-                    (config.get("name", f"kaggle-{job_id[:8]}"), s3_path, json.dumps(config)),
-                )
-                policy_id = str(cur.fetchone()[0])
-            conn.commit()
-
-        update_kaggle_job(job_id, "pending_approval", {
-            "model_path": s3_path,
-            "policy_id": policy_id,
-            "kaggle_url": kernel_info["kernel_url"],
-        })
-
-        # 7. Auto-trigger backtest
-        trigger_backtest_for_job(job_id, policy_id, symbol)
-
-        log.info(f"[{job_id}] Model ready. Awaiting manual approval. policy_id={policy_id}")
+        log.info(
+            f"[{job_id}] Kernel pushed to Kaggle (version {kernel_info.get('version_number')}). "
+            f"Run it on kaggle.com, then use POST /kaggle/jobs/{job_id}/complete "
+            f"to download the model. {kernel_info['kernel_url']}"
+        )
+        # Automated polling removed — Kaggle v1 /kernels/status/ is broken.
+        # User triggers model download manually via /kaggle/jobs/{job_id}/complete
+        # after confirming the kernel finished on kaggle.com. See ALPCA-35.
 
     except Exception as e:
         log.error(f"[{job_id}] Orchestration failed: {e}", exc_info=True)
