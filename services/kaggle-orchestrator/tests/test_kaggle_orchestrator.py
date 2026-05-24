@@ -413,15 +413,17 @@ class TestApprovalEndpoints:
 class TestQuotaEndpoint:
     def test_returns_quota_info(self, app_client, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         with patch("main.kaggle_request", return_value={
             "userName": "testuser",
             "gpuQuotaUser": 30,
             "gpuQuotaUsed": 5,
-        }):
+        }) as mock_req:
             resp = app_client.get("/kaggle/quota")
         assert resp.status_code == 200
         body = resp.json()
         assert body["gpuRemaining"] == 25
+        mock_req.assert_called_once_with("GET", "/users/testuser")
 
     def test_returns_error_info_on_failure(self, app_client, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
