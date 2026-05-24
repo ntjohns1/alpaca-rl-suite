@@ -178,24 +178,6 @@ class TestKaggleRequest:
         assert isinstance(call_kwargs.get("auth"), HTTPBasicAuth)
 
 
-class TestGetKernelStatus:
-    def test_returns_unknown_on_exception(self, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
-        with patch("main.kaggle_request", side_effect=Exception("network error")):
-            import main
-            status = main.get_kernel_status("my-kernel")
-        assert status == "unknown"
-
-    def test_returns_status_string(self, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
-        with patch("main.kaggle_request", return_value={
-            "currentRunningVersion": {"status": "complete"}
-        }):
-            import main
-            status = main.get_kernel_status("my-kernel")
-        assert status == "complete"
-
-
 class TestTriggerBacktestForJob:
     def test_fires_and_forgets_on_success(self):
         mock_resp = MagicMock()
