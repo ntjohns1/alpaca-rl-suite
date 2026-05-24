@@ -218,6 +218,23 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
 # ─────────────────────────────────────────
 # Kernel triggering & polling
 # ─────────────────────────────────────────
+def _get_kernel_id(kernel_slug: str) -> int | None:
+    """Look up the numeric kernel ID from the slug via the Kaggle API.
+    Returns None if the kernel doesn't exist yet."""
+    try:
+        kernels = kaggle_request(
+            "GET", "/kernels/list",
+            params={"user": KAGGLE_USERNAME, "pageSize": 100},
+        )
+        full_ref = f"{KAGGLE_USERNAME}/{kernel_slug}"
+        for k in kernels:
+            if k.get("ref") == full_ref:
+                return k["id"]
+    except Exception as e:
+        log.warning("Failed to look up kernel ID for %s: %s", kernel_slug, e)
+    return None
+
+
 def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
     """Push kernel via REST API to trigger execution, including the bundled notebook source."""
     notebook_file = os.environ.get("KAGGLE_NOTEBOOK_PATH", NOTEBOOK_PATH)
@@ -233,7 +250,6 @@ def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
     notebook_source = json.dumps(nb)
 
     body = {
-        "id": f"{KAGGLE_USERNAME}/{kernel_slug}",
         "title": "Alpaca RL Training",
         "text": notebook_source,
         "language": "python",
@@ -246,6 +262,18 @@ def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
         "kernelDataSources": [],
         "categoryIds": [],
     }
+
+    # The Kaggle API expects a numeric integer ID for existing kernels.
+    # If the kernel doesn't exist yet, we create a new one via newTitle + slug.
+    kernel_id = _get_kernel_id(kernel_slug)
+    if kernel_id is not None:
+        body["id"] = kernel_id
+        log.info("Pushing to existing kernel ID %d (%s)", kernel_id, kernel_slug)
+    else:
+        body["newTitle"] = "Alpaca RL Training"
+        body["slug"] = kernel_slug
+        log.info("Creating new kernel: %s", kernel_slug)
+
     resp = kaggle_request("POST", "/kernels/push", json=body)
     log.info("Kernel push response: %s", resp)
 
@@ -796,7 +824,7 @@ def reject_job_promotion(
 def get_kaggle_quota(_user: dict = Depends(get_current_user)):
     """Retrieve GPU quota information from Kaggle API."""
     try:
-        data = kaggle_request("GET", "/users/me")
+        data = kaggle_request("GET", f"/users/{KAGGLE_USERNAME}")
         return {
             "username":    data.get("userName"),
             "gpuQuota":    data.get("gpuQuotaUser"),
