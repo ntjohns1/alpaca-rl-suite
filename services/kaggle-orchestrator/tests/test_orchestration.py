@@ -7,6 +7,7 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
 
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
@@ -335,19 +336,55 @@ class TestUploadBlob:
 
 
 class TestPushKaggleKernel:
-    def test_pushes_kernel_via_api(self, monkeypatch, tmp_path):
+    def test_pushes_new_kernel_via_api(self, monkeypatch, tmp_path):
+        """When _get_kernel_id returns None (kernel doesn't exist), use newTitle/slug."""
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
         notebook = tmp_path / "notebook.ipynb"
         notebook.write_text('{"cells": []}')
         monkeypatch.setenv("KAGGLE_NOTEBOOK_PATH", str(notebook))
-        with patch("main.kaggle_request", return_value={"versionNumber": 3}) as mock_kgr:
+
+        def mock_request(method, path, **kwargs):
+            if "/kernels/pull/" in path:
+                # Simulate 404 — kernel doesn't exist yet
+                resp = requests.Response()
+                resp.status_code = 404
+                raise requests.HTTPError(response=resp)
+            return {"versionNumber": 1}
+
+        with patch("main.kaggle_request", side_effect=mock_request) as mock_kgr:
             from main import push_kaggle_kernel
             result = push_kaggle_kernel("alpaca-rl-training", "alpaca-rl-spy")
-        assert mock_kgr.called
-        assert "kernel_url" in result
+        # Verify the push call used newTitle (not id)
+        push_call = [c for c in mock_kgr.call_args_list if c[0] == ("POST", "/kernels/push")]
+        assert len(push_call) == 1
+        body = push_call[0][1]["json"]
+        assert "id" not in body
+        assert body["newTitle"] == "Alpaca RL Training"
         assert result["status"] == "triggered"
-        assert result["version_number"] == 3
+
+    def test_pushes_existing_kernel_with_numeric_id(self, monkeypatch, tmp_path):
+        """When _get_kernel_id finds the kernel, use numeric id."""
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        notebook = tmp_path / "notebook.ipynb"
+        notebook.write_text('{"cells": []}')
+        monkeypatch.setenv("KAGGLE_NOTEBOOK_PATH", str(notebook))
+
+        def mock_request(method, path, **kwargs):
+            if "/kernels/pull/" in path:
+                return {"metadata": {"id": 120470939, "ref": "testuser/alpaca-rl-training"}}
+            return {"versionNumber": 4}
+
+        with patch("main.kaggle_request", side_effect=mock_request) as mock_kgr:
+            from main import push_kaggle_kernel
+            result = push_kaggle_kernel("alpaca-rl-training", "alpaca-rl-spy")
+        push_call = [c for c in mock_kgr.call_args_list if c[0] == ("POST", "/kernels/push")]
+        assert len(push_call) == 1
+        body = push_call[0][1]["json"]
+        assert body["id"] == 120470939
+        assert "newTitle" not in body
+        assert result["version_number"] == 4
 
     def test_raises_if_notebook_missing(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
