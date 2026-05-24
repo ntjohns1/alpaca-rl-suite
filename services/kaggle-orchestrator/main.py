@@ -219,17 +219,25 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
 # Kernel triggering & polling
 # ─────────────────────────────────────────
 def _get_kernel_id(kernel_slug: str) -> int | None:
-    """Look up the numeric kernel ID from the slug via the Kaggle API.
-    Returns None if the kernel doesn't exist yet."""
+    """Look up the numeric kernel ID via the /kernels/pull endpoint.
+
+    The /kernels/list endpoint returns id=0 for all kernels, so we use
+    /kernels/pull which returns full metadata including the real numeric ID.
+    Returns None if the kernel doesn't exist yet.
+    """
     try:
-        kernels = kaggle_request(
-            "GET", "/kernels/list",
-            params={"user": KAGGLE_USERNAME, "pageSize": 100},
+        data = kaggle_request(
+            "GET", f"/kernels/pull/{KAGGLE_USERNAME}/{kernel_slug}",
         )
-        full_ref = f"{KAGGLE_USERNAME}/{kernel_slug}"
-        for k in kernels:
-            if k.get("ref") == full_ref:
-                return k["id"]
+        kid = (data.get("metadata") or {}).get("id")
+        if kid and kid > 0:
+            return kid
+        log.warning("Kernel %s pull returned invalid id=%s", kernel_slug, kid)
+    except requests.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            log.info("Kernel %s not found (404), will create new", kernel_slug)
+        else:
+            log.warning("Failed to look up kernel ID for %s: %s", kernel_slug, e)
     except Exception as e:
         log.warning("Failed to look up kernel ID for %s: %s", kernel_slug, e)
     return None
@@ -276,6 +284,10 @@ def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
 
     resp = kaggle_request("POST", "/kernels/push", json=body)
     log.info("Kernel push response: %s", resp)
+
+    # Check for API-level errors (e.g. missing title, invalid ID)
+    if resp.get("hasError") or resp.get("error"):
+        raise RuntimeError(f"Kaggle kernels/push failed: {resp.get('error', resp.get('errorNullable', 'unknown'))}")
 
     return {
         "status": "triggered",
@@ -822,18 +834,18 @@ def reject_job_promotion(
 
 @app.get("/kaggle/quota")
 def get_kaggle_quota(_user: dict = Depends(get_current_user)):
-    """Retrieve GPU quota information from Kaggle API."""
-    try:
-        data = kaggle_request("GET", f"/users/{KAGGLE_USERNAME}")
-        return {
-            "username":    data.get("userName"),
-            "gpuQuota":    data.get("gpuQuotaUser"),
-            "gpuUsed":     data.get("gpuQuotaUsed"),
-            "gpuRemaining": (data.get("gpuQuotaUser", 0) - data.get("gpuQuotaUsed", 0)),
-            "kaggle_url":  "https://www.kaggle.com/settings",
-        }
-    except Exception as e:
-        return {"error": str(e), "message": "Check https://www.kaggle.com/settings for quota"}
+    """Return Kaggle quota info.
+
+    The Kaggle REST API does not expose a user-profile or GPU-quota
+    endpoint via Basic auth, so we return a link to the settings page
+    where the user can check quota manually.
+    """
+    return {
+        "username":     KAGGLE_USERNAME or None,
+        "message":      "GPU quota is not available via the Kaggle API. Check the link below.",
+        "kaggle_url":   "https://www.kaggle.com/settings",
+        "configured":   bool(KAGGLE_API_TOKEN and KAGGLE_USERNAME),
+    }
 
 
 @app.get("/kaggle/health")
