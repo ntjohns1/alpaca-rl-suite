@@ -8,98 +8,56 @@ Usage:
 import sys
 import os
 import requests
-
-def get_kernel_metadata_via_cli(kernel_slug: str) -> dict:
-    """
-    Get kernel metadata using Kaggle CLI.
-    This is more reliable than the API for getting id_no.
-    """
-    import tempfile
-    import json
-    import subprocess
-    
-    print(f"🔍 Pulling kernel metadata via CLI: {kernel_slug}")
-    
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            # Pull kernel metadata only (not the code)
-            result = subprocess.run(
-                ["kaggle", "kernels", "pull", "-p", tmpdir, "-k", kernel_slug, "-m"],
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            
-            # Read the metadata file
-            metadata_path = f"{tmpdir}/kernel-metadata.json"
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-            
-            print(f"\n✅ Found kernel metadata!")
-            print(f"   Title: {metadata.get('title')}")
-            print(f"   ID: {metadata.get('id')}")
-            print(f"   ID Number: {metadata.get('id_no')}")
-            print(f"   Language: {metadata.get('language')}")
-            print(f"   GPU Enabled: {metadata.get('enable_gpu')}")
-            print(f"   Dataset Sources: {metadata.get('dataset_sources', [])}")
-            
-            return metadata
-            
-        except subprocess.CalledProcessError as e:
-            print(f"❌ CLI Error: {e.stderr}")
-            return None
-        except FileNotFoundError:
-            print(f"❌ Metadata file not found")
-            return None
+from requests.auth import HTTPBasicAuth
 
 
 def get_kernel_id(kernel_slug: str) -> dict:
     """
-    Get kernel details including numeric ID.
-    
+    Get kernel details including numeric ID via Kaggle REST API.
+
     Args:
         kernel_slug: Format "username/kernel-slug"
-    
+
     Returns:
-        dict with kernel info including 'id'
+        dict with kernel info including 'id', or None if not found
     """
-    # Try CLI method first (more reliable)
-    metadata = get_kernel_metadata_via_cli(kernel_slug)
-    if metadata and metadata.get('id_no'):
-        return metadata
-    
-    # Fallback to API method
     username = os.getenv("KAGGLE_USERNAME")
-    api_token = os.getenv("KAGGLE_API_TOKEN")
-    
+    api_token = os.getenv("KAGGLE_API_TOKEN") or os.getenv("KAGGLE_KEY")  # KAGGLE_KEY is legacy
+
     if not username or not api_token:
         print("❌ Error: KAGGLE_USERNAME and KAGGLE_API_TOKEN must be set")
         sys.exit(1)
-    
-    # Kaggle API endpoint
-    url = f"https://www.kaggle.com/api/v1/kernels/list"
-    
-    headers = {
-        "Authorization": f"Bearer {api_token}"
-    }
-    
-    params = {
-        "user": username,
-        "pageSize": 100
-    }
-    
-    print(f"🔍 Searching for kernel via API: {kernel_slug}")
-    
-    response = requests.get(url, headers=headers, params=params)
-    
-    if response.status_code != 200:
-        print(f"❌ API Error: {response.status_code}")
-        print(response.text)
+
+    auth = HTTPBasicAuth(username, api_token)
+
+    # Try the status endpoint first (direct lookup)
+    print(f"🔍 Looking up kernel: {kernel_slug}")
+    status_resp = requests.get(
+        f"https://www.kaggle.com/api/v1/kernels/status/{kernel_slug}",
+        auth=auth,
+        timeout=120,
+    )
+    if status_resp.status_code == 200:
+        data = status_resp.json()
+        print(f"\n✅ Found kernel!")
+        print(f"   ID: {data.get('id')}")
+        return data
+
+    # Fallback: list user's kernels and search
+    print(f"   Status endpoint returned {status_resp.status_code}, falling back to list...")
+    list_resp = requests.get(
+        "https://www.kaggle.com/api/v1/kernels/list",
+        params={"user": username, "pageSize": 100},
+        auth=auth,
+        timeout=120,
+    )
+
+    if list_resp.status_code != 200:
+        print(f"❌ API Error: {list_resp.status_code}")
+        print(list_resp.text)
         sys.exit(1)
-    
-    kernels = response.json()
-    
-    # Find matching kernel
+
+    kernels = list_resp.json()
     for kernel in kernels:
         if kernel.get("ref") == kernel_slug:
             print(f"\n✅ Found kernel!")
@@ -107,14 +65,13 @@ def get_kernel_id(kernel_slug: str) -> dict:
             print(f"   Slug: {kernel.get('ref')}")
             print(f"   ID: {kernel.get('id')}")
             print(f"   URL: https://www.kaggle.com/code/{kernel_slug}")
-            
             return kernel
-    
+
     print(f"\n❌ Kernel not found: {kernel_slug}")
     print(f"\nAvailable kernels:")
     for kernel in kernels[:10]:
         print(f"  - {kernel.get('ref')} (ID: {kernel.get('id')})")
-    
+
     return None
 
 

@@ -5,33 +5,63 @@ Usage: python download_model.py --kernel-slug alpaca-rl-training --run-id 202603
 """
 import argparse
 import os
-import subprocess
 import boto3
+import requests
 from pathlib import Path
+from requests.auth import HTTPBasicAuth
+
+
+KAGGLE_API_BASE = "https://www.kaggle.com/api/v1"
 
 
 def download_from_kaggle(username: str, kernel_slug: str, output_dir: str):
-    """Download kernel output using Kaggle CLI"""
+    """Download kernel output using Kaggle REST API (no CLI dependency)."""
+    api_key = os.getenv("KAGGLE_API_TOKEN") or os.getenv("KAGGLE_KEY")
+    if not api_key:
+        raise ValueError("KAGGLE_API_TOKEN must be set")
+
+    auth = HTTPBasicAuth(username, api_key)
     print(f"Downloading output from {username}/{kernel_slug}...")
-    
-    # Create output directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-    # Download using Kaggle CLI
-    result = subprocess.run(
-        ["kaggle", "kernels", "output", f"{username}/{kernel_slug}", "-p", output_dir],
-        capture_output=True, text=True
+
+    resp = requests.get(
+        f"{KAGGLE_API_BASE}/kernels/output",
+        params={"userName": username, "kernelSlug": kernel_slug},
+        auth=auth,
+        timeout=120,
     )
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"Kaggle download failed: {result.stderr}")
-    
-    print(f"✓ Downloaded to {output_dir}")
-    
-    # List downloaded files
+    resp.raise_for_status()
+    data = resp.json()
+
+    files_info = data.get("files", [])
+    if not files_info:
+        raise RuntimeError("No output files returned from Kaggle API")
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    downloaded = 0
+    for file_info in files_info:
+        file_url = file_info.get("url")
+        raw_name = file_info.get("fileName", file_info.get("name", "output"))
+        file_name = os.path.basename(raw_name)  # sanitize: prevent path traversal
+        if not file_name:
+            continue
+        if not file_url:
+            continue
+        print(f"  Downloading {file_name}...")
+        # Don't send Kaggle credentials to third-party download URLs (e.g. GCS)
+        dl_resp = requests.get(file_url, stream=True, timeout=600)
+        dl_resp.raise_for_status()
+        dest = os.path.join(output_dir, file_name)
+        with open(dest, "wb") as f:
+            for chunk in dl_resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        downloaded += 1
+
+    print(f"✓ Downloaded {downloaded} file(s) to {output_dir}")
+
     files = list(Path(output_dir).glob("*"))
     print(f"  Files: {[f.name for f in files]}")
-    
+
     return files
 
 

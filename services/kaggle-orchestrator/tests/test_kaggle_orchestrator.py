@@ -140,14 +140,16 @@ class TestExportTrainingDataset:
 
 
 class TestKaggleRequest:
-    def test_raises_without_api_token(self, monkeypatch):
+    def test_raises_without_credentials(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_API_TOKEN", "")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "")
         import main
-        with pytest.raises(ValueError, match="KAGGLE_API_TOKEN"):
+        with pytest.raises(ValueError, match="KAGGLE_USERNAME and KAGGLE_API_TOKEN"):
             main.kaggle_request("GET", "/test")
 
     def test_raises_on_http_error(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         mock_resp = MagicMock()
         mock_resp.status_code = 403
         mock_resp.text = "Forbidden"
@@ -160,15 +162,20 @@ class TestKaggleRequest:
 
     def test_returns_json_on_success(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = b'{"userName": "testuser"}'
         mock_resp.raise_for_status = MagicMock()
         mock_resp.json.return_value = {"userName": "testuser"}
-        with patch("requests.request", return_value=mock_resp):
+        with patch("requests.request", return_value=mock_resp) as mock_req:
             import main
             result = main.kaggle_request("GET", "/users/me")
         assert result["userName"] == "testuser"
+        # Verify Basic auth is used (not Bearer)
+        from requests.auth import HTTPBasicAuth
+        call_kwargs = mock_req.call_args[1]
+        assert isinstance(call_kwargs.get("auth"), HTTPBasicAuth)
 
 
 class TestGetKernelStatus:

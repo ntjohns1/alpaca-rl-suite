@@ -6,6 +6,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -234,54 +236,124 @@ class TestCompleteKaggleTraining:
 # ─── create_kaggle_dataset / push_kaggle_kernel helpers ──────────────────────
 
 class TestCreateKaggleDataset:
-    def test_calls_subprocess_run(self, monkeypatch, tmp_path):
+    def test_creates_dataset_via_api(self, monkeypatch, tmp_path):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "Dataset created"
-        mock_result.stderr = ""
-        # Create a real csv file to copy
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
         csv_path = str(tmp_path / "data.csv")
         with open(csv_path, "w") as f:
             f.write("date,close\n2024-01-01,400.0\n")
-        with patch("subprocess.run", return_value=mock_result) as mock_sub:
+
+        mock_blob_resp = MagicMock()
+        mock_blob_resp.status_code = 200
+        mock_blob_resp.raise_for_status = MagicMock()
+        mock_blob_resp.json.return_value = {"token": "blob-tok-1", "createUrl": "https://gcs.example/upload"}
+
+        mock_put_resp = MagicMock()
+        mock_put_resp.raise_for_status = MagicMock()
+
+        with patch("requests.post", return_value=mock_blob_resp), \
+             patch("requests.put", return_value=mock_put_resp), \
+             patch("main.kaggle_request", return_value={"status": "ok"}) as mock_kgr:
             from main import create_kaggle_dataset
             result = create_kaggle_dataset("SPY", csv_path, "alpaca-rl-spy")
-        assert mock_sub.called
         assert result["dataset_slug"] == "alpaca-rl-spy"
         assert result["status"] == "success"
+        mock_kgr.assert_called_once()
 
     def test_handles_already_exists_by_versioning(self, monkeypatch, tmp_path):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
         csv_path = str(tmp_path / "data.csv")
         with open(csv_path, "w") as f:
             f.write("date,close\n2024-01-01,400.0\n")
-        create_result = MagicMock(returncode=1, stderr="Dataset already exists", stdout="")
-        version_result = MagicMock(returncode=0, stderr="", stdout="Version created")
-        with patch("subprocess.run", side_effect=[create_result, version_result]) as mock_sub:
+
+        mock_blob_resp = MagicMock()
+        mock_blob_resp.status_code = 200
+        mock_blob_resp.raise_for_status = MagicMock()
+        mock_blob_resp.json.return_value = {"token": "blob-tok-1", "createUrl": "https://gcs.example/upload"}
+
+        mock_put_resp = MagicMock()
+        mock_put_resp.raise_for_status = MagicMock()
+
+        import requests as req_mod
+        http_error = req_mod.HTTPError(response=MagicMock(status_code=409))
+
+        calls = []
+        def fake_kaggle_request(method, endpoint, **kwargs):
+            calls.append((method, endpoint))
+            if len(calls) == 1:
+                raise http_error
+            return {"status": "ok"}
+
+        with patch("requests.post", return_value=mock_blob_resp), \
+             patch("requests.put", return_value=mock_put_resp), \
+             patch("main.kaggle_request", side_effect=fake_kaggle_request):
             from main import create_kaggle_dataset
             result = create_kaggle_dataset("SPY", csv_path, "alpaca-rl-spy")
-        assert mock_sub.call_count == 2
+        assert len(calls) == 2
+        assert calls[0] == ("POST", "/datasets/create/new")
+        assert calls[1][0] == "POST"
+        assert "/datasets/create/version/" in calls[1][1]
         assert result["status"] == "success"
 
 
-class TestPushKaggleKernel:
-    def test_calls_subprocess_run(self, monkeypatch, tmp_path):
+class TestUploadBlob:
+    def test_raises_on_missing_token_in_response(self, monkeypatch, tmp_path):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        mock_result = MagicMock(returncode=0, stdout="Kernel pushed", stderr="")
-        with patch("subprocess.run", return_value=mock_result) as mock_sub, \
-             patch("tempfile.gettempdir", return_value=str(tmp_path)):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        csv_path = str(tmp_path / "data.csv")
+        with open(csv_path, "w") as f:
+            f.write("date,close\n2024-01-01,400.0\n")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.raise_for_status = MagicMock()
+        mock_resp.json.return_value = {"createUrl": "https://gcs.example/upload"}  # no token
+
+        with patch("requests.post", return_value=mock_resp):
+            from main import _upload_blob
+            with pytest.raises(ValueError, match="missing createUrl or token"):
+                _upload_blob(csv_path, "data.csv")
+
+    def test_raises_on_blob_api_error(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        csv_path = str(tmp_path / "data.csv")
+        with open(csv_path, "w") as f:
+            f.write("date,close\n2024-01-01,400.0\n")
+
+        import requests as req_mod
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.text = "Forbidden"
+        mock_resp.raise_for_status.side_effect = req_mod.HTTPError("403")
+
+        with patch("requests.post", return_value=mock_resp):
+            from main import _upload_blob
+            with pytest.raises(req_mod.HTTPError):
+                _upload_blob(csv_path, "data.csv")
+
+
+class TestPushKaggleKernel:
+    def test_pushes_kernel_via_api(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        notebook = tmp_path / "notebook.ipynb"
+        notebook.write_text('{"cells": []}')
+        monkeypatch.setenv("KAGGLE_NOTEBOOK_PATH", str(notebook))
+        with patch("main.kaggle_request", return_value={"versionNumber": 3}) as mock_kgr:
             from main import push_kaggle_kernel
             result = push_kaggle_kernel("alpaca-rl-training", "alpaca-rl-spy")
-        assert mock_sub.called
+        assert mock_kgr.called
         assert "kernel_url" in result
         assert result["status"] == "triggered"
+        assert result["version_number"] == 3
 
-    def test_returns_kernel_url_on_nonzero_exit(self, monkeypatch, tmp_path):
+    def test_raises_if_notebook_missing(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        mock_result = MagicMock(returncode=1, stdout="", stderr="some warning")
-        with patch("subprocess.run", return_value=mock_result), \
-             patch("tempfile.gettempdir", return_value=str(tmp_path)):
-            from main import push_kaggle_kernel
-            result = push_kaggle_kernel("alpaca-rl-training", "alpaca-rl-spy")
-        assert result["status"] == "triggered"
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setenv("KAGGLE_NOTEBOOK_PATH", "/nonexistent/path.ipynb")
+        from main import push_kaggle_kernel
+        import pytest
+        with pytest.raises(FileNotFoundError):
+            push_kaggle_kernel("alpaca-rl-training", "alpaca-rl-spy")
