@@ -12,10 +12,9 @@ import json
 import logging
 import hashlib
 import os
-import shutil
-import subprocess
 import sys
 import tempfile
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
@@ -23,9 +22,10 @@ import boto3
 import pandas as pd
 import psycopg2
 import requests
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from requests.auth import HTTPBasicAuth
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 from keycloak_auth import keycloak_auth_from_env, make_auth_dependencies  # noqa: E402
@@ -54,13 +54,15 @@ KAGGLE_ORCHESTRATOR_PORT = int(os.getenv("KAGGLE_ORCHESTRATOR_PORT", "8011"))
 KAGGLE_POLL_INTERVAL_S   = int(os.getenv("KAGGLE_POLL_INTERVAL_S", "60"))
 BACKTEST_SERVICE_URL     = os.getenv("BACKTEST_SERVICE_URL", "http://backtest:8001")
 
-# Configure Kaggle CLI env vars
-if KAGGLE_API_TOKEN:
-    os.environ["KAGGLE_KEY"] = KAGGLE_API_TOKEN
-if KAGGLE_USERNAME:
-    os.environ["KAGGLE_USERNAME"] = KAGGLE_USERNAME
-
 KAGGLE_API_BASE = "https://www.kaggle.com/api/v1"
+KAGGLE_BLOB_API_BASE = "https://api.kaggle.com/v1"
+
+# In Docker the notebook is at /kaggle/notebooks/; locally it's two levels up.
+_LOCAL_NOTEBOOK = os.path.join(
+    os.path.dirname(__file__), "..", "..", "kaggle", "notebooks", "alpaca-rl-training.ipynb"
+)
+_DOCKER_NOTEBOOK = "/kaggle/notebooks/alpaca-rl-training.ipynb"
+NOTEBOOK_PATH = _LOCAL_NOTEBOOK if os.path.isfile(_LOCAL_NOTEBOOK) else _DOCKER_NOTEBOOK
 
 
 # ─────────────────────────────────────────
@@ -79,16 +81,24 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 
+def _kaggle_auth() -> HTTPBasicAuth:
+    if not KAGGLE_USERNAME or not KAGGLE_API_TOKEN:
+        raise ValueError("KAGGLE_USERNAME and KAGGLE_API_TOKEN must be set")
+    return HTTPBasicAuth(KAGGLE_USERNAME, KAGGLE_API_TOKEN)
+
+
+KAGGLE_REQUEST_TIMEOUT = int(os.getenv("KAGGLE_REQUEST_TIMEOUT", "120"))
+
+
 def kaggle_request(method: str, endpoint: str, **kwargs):
-    """Make authenticated request to Kaggle API using Bearer token."""
-    if not KAGGLE_API_TOKEN:
-        raise ValueError("KAGGLE_API_TOKEN must be set")
+    """Make authenticated request to Kaggle API using HTTP Basic auth."""
     url = f"{KAGGLE_API_BASE}{endpoint}"
-    headers = kwargs.pop("headers", {})
-    headers["Authorization"] = f"Bearer {KAGGLE_API_TOKEN}"
-    response = requests.request(method, url, headers=headers, **kwargs)
+    if "auth" not in kwargs:
+        kwargs["auth"] = _kaggle_auth()
+    kwargs.setdefault("timeout", KAGGLE_REQUEST_TIMEOUT)
+    response = requests.request(method, url, **kwargs)
     if response.status_code >= 400:
-        log.error(f"Kaggle API {response.status_code} @ {url}: {response.text}")
+        log.error("Kaggle API %s @ %s: %s", response.status_code, url, response.text)
     response.raise_for_status()
     return response.json() if response.content else {}
 
@@ -125,36 +135,78 @@ def export_training_dataset(symbol: str, output_path: str) -> dict:
     }
 
 
-def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict:
-    """Create or update a Kaggle dataset via CLI."""
-    metadata = {
-        "title": f"Alpaca RL Trading Data - {symbol}",
-        "id": f"{KAGGLE_USERNAME}/{dataset_slug}",
-        "slug": dataset_slug,
-        "licenses": [{"name": "CC0-1.0"}],
-        "resources": [{"path": os.path.basename(csv_path), "description": f"Daily OHLCV for {symbol}"}],
-    }
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with open(os.path.join(tmpdir, "dataset-metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=2)
-        shutil.copy(csv_path, tmpdir)
+def _upload_blob(file_path: str, file_name: str) -> str:
+    """Upload a file via the Kaggle blob API and return the blob token."""
+    file_size = os.path.getsize(file_path)
+    auth = _kaggle_auth()
 
-        result = subprocess.run(
-            ["kaggle", "datasets", "create", "-p", tmpdir],
-            capture_output=True, text=True, check=False,
+    blob_url = f"{KAGGLE_BLOB_API_BASE}/blobs.BlobApiService/StartBlobUpload"
+    start_resp = requests.post(
+        blob_url,
+        json={"type": "DATASET", "name": file_name, "contentLength": file_size, "contentType": "text/csv"},
+        auth=auth,
+        timeout=KAGGLE_REQUEST_TIMEOUT,
+    )
+    if start_resp.status_code >= 400:
+        log.error("Blob API %s @ %s: %s", start_resp.status_code, blob_url, start_resp.text)
+    start_resp.raise_for_status()
+    try:
+        blob_info = start_resp.json()
+    except ValueError:
+        log.error("Blob API returned non-JSON response: %s", start_resp.text[:500])
+        raise
+
+    create_url = blob_info.get("createUrl")
+    token = blob_info.get("token")
+    if not create_url or not token:
+        raise ValueError(
+            f"Unexpected StartBlobUpload response (missing createUrl or token): {blob_info}"
         )
-        if result.returncode != 0:
-            if "already exists" in result.stderr:
-                result = subprocess.run(
-                    ["kaggle", "datasets", "version", "-p", tmpdir, "-m", "Updated data"],
-                    capture_output=True, text=True, check=True,
-                )
-                log.info(f"Updated Kaggle dataset: {dataset_slug}")
-            else:
-                log.error(f"Dataset create failed: {result.stderr}")
-                result.check_returncode()
+
+    with open(file_path, "rb") as f:
+        put_resp = requests.put(
+            create_url, data=f,
+            headers={"Content-Type": "text/csv", "Content-Length": str(file_size)},
+            timeout=600,
+        )
+    put_resp.raise_for_status()
+
+    return token
+
+
+def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict:
+    """Create or update a Kaggle dataset via REST API (no CLI)."""
+    file_name = os.path.basename(csv_path)
+    blob_token = _upload_blob(csv_path, file_name)
+
+    body = {
+        "title": f"Alpaca RL Trading Data - {symbol}",
+        "slug": dataset_slug,
+        "ownerSlug": KAGGLE_USERNAME,
+        "licenseName": "CC0-1.0",
+        "isPrivate": True,
+        "files": [{"token": blob_token, "description": f"Daily features for {symbol}"}],
+    }
+
+    try:
+        kaggle_request("POST", "/datasets/create/new", json=body)
+        log.info("Created Kaggle dataset: %s", dataset_slug)
+    except requests.HTTPError as exc:
+        if exc.response is not None and exc.response.status_code == 409:
+            version_body = {
+                "convertToBigQuery": False,
+                "deleteOldVersions": False,
+                "versionNotes": "Updated data",
+                "files": [{"token": blob_token, "description": f"Daily features for {symbol}"}],
+            }
+            kaggle_request(
+                "POST",
+                f"/datasets/create/version/{KAGGLE_USERNAME}/{dataset_slug}",
+                json=version_body,
+            )
+            log.info("Updated Kaggle dataset: %s", dataset_slug)
         else:
-            log.info(f"Created Kaggle dataset: {dataset_slug}")
+            raise
 
     return {
         "dataset_slug": dataset_slug,
@@ -167,37 +219,40 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
 # Kernel triggering & polling
 # ─────────────────────────────────────────
 def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
-    """Push kernel via CLI to trigger execution."""
-    kernel_dir = os.path.join(tempfile.gettempdir(), f"kernel_{kernel_slug}")
-    os.makedirs(kernel_dir, exist_ok=True)
+    """Push kernel via REST API to trigger execution, including the bundled notebook source."""
+    notebook_file = os.environ.get("KAGGLE_NOTEBOOK_PATH", NOTEBOOK_PATH)
+    if not os.path.isfile(notebook_file):
+        raise FileNotFoundError(f"Notebook not found: {notebook_file}")
+    with open(notebook_file) as f:
+        nb = json.load(f)
+    # Strip saved cell outputs to avoid bloating the push payload
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") == "code":
+            cell["outputs"] = []
+            cell["execution_count"] = None
+    notebook_source = json.dumps(nb)
 
-    kernel_meta = {
+    body = {
         "id": f"{KAGGLE_USERNAME}/{kernel_slug}",
         "title": "Alpaca RL Training",
-        "code_file": "alpaca-rl-training.ipynb",
+        "text": notebook_source,
         "language": "python",
-        "kernel_type": "notebook",
-        "is_private": True,
-        "enable_gpu": True,
-        "enable_internet": False,
-        "dataset_sources": [f"{KAGGLE_USERNAME}/{dataset_slug}"],
-        "competition_sources": [],
-        "kernel_sources": [],
+        "kernelType": "notebook",
+        "isPrivate": True,
+        "enableGpu": True,
+        "enableInternet": False,
+        "datasetDataSources": [f"{KAGGLE_USERNAME}/{dataset_slug}"],
+        "competitionDataSources": [],
+        "kernelDataSources": [],
+        "categoryIds": [],
     }
-    with open(os.path.join(kernel_dir, "kernel-metadata.json"), "w") as f:
-        json.dump(kernel_meta, f, indent=2)
-
-    result = subprocess.run(
-        ["kaggle", "kernels", "push", "-p", kernel_dir],
-        capture_output=True, text=True, check=False,
-    )
-    if result.returncode != 0:
-        log.warning(f"Kernel push warning: {result.stderr}")
+    resp = kaggle_request("POST", "/kernels/push", json=body)
+    log.info("Kernel push response: %s", resp)
 
     return {
         "status": "triggered",
         "kernel_url": f"https://www.kaggle.com/code/{KAGGLE_USERNAME}/{kernel_slug}",
-        "stdout": result.stdout,
+        "version_number": resp.get("versionNumber"),
     }
 
 
@@ -205,9 +260,9 @@ def get_kernel_status(kernel_slug: str) -> str:
     """Poll Kaggle for kernel run status. Returns: running|complete|error|cancelAcknowledged"""
     try:
         data = kaggle_request("GET", f"/kernels/{KAGGLE_USERNAME}/{kernel_slug}")
-        return data.get("currentRunningVersion", {}).get("status", "unknown")
+        return (data.get("currentRunningVersion") or {}).get("status", "unknown")
     except Exception as e:
-        log.warning(f"Kernel status poll failed: {e}")
+        log.warning("Kernel status poll failed: %s", e)
         return "unknown"
 
 
@@ -215,12 +270,43 @@ def get_kernel_status(kernel_slug: str) -> str:
 # Model download & upload
 # ─────────────────────────────────────────
 def download_model_from_kaggle(kernel_slug: str, output_dir: str) -> str:
-    """Download trained model from Kaggle kernel output."""
-    subprocess.run(
-        ["kaggle", "kernels", "output", f"{KAGGLE_USERNAME}/{kernel_slug}", "-p", output_dir],
-        capture_output=True, text=True, check=True,
+    """Download trained model from Kaggle kernel output via REST API."""
+    data = kaggle_request(
+        "GET", "/kernels/output",
+        params={"userName": KAGGLE_USERNAME, "kernelSlug": kernel_slug},
     )
-    log.info(f"Downloaded Kaggle kernel output to {output_dir}")
+
+    files = data.get("files", [])
+    if not files:
+        raise ValueError(f"No output files returned for kernel {kernel_slug}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    downloaded = 0
+    for file_info in files:
+        file_url = file_info.get("url")
+        raw_name = file_info.get("fileName", file_info.get("name", "output"))
+        file_name = os.path.basename(raw_name)  # sanitize: prevent path traversal
+        if not file_name:
+            log.warning("Skipping file with empty name: %s", file_info)
+            continue
+        if not file_url:
+            log.warning("Skipping file with no URL: %s", file_info)
+            continue
+        log.info("Downloading kernel output file: %s", file_name)
+        # Don't send Kaggle credentials to third-party download URLs (e.g. GCS)
+        dl_resp = requests.get(file_url, stream=True, timeout=600)
+        dl_resp.raise_for_status()
+        dest = os.path.join(output_dir, file_name)
+        with open(dest, "wb") as f:
+            for chunk in dl_resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+        downloaded += 1
+
+    if downloaded == 0:
+        raise ValueError(
+            f"All {len(files)} output file(s) for kernel {kernel_slug} lacked download URLs"
+        )
+    log.info("Downloaded %d file(s) from Kaggle kernel output to %s", downloaded, output_dir)
     return output_dir
 
 
@@ -256,7 +342,10 @@ def update_kaggle_job(job_id: str, status: str, metadata: dict = None, error: st
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE kaggle_training_job
-                   SET status=%s, metadata=%s, error=%s, updated_at=NOW(),
+                   SET status=%s,
+                       metadata=COALESCE(%s, metadata),
+                       error=%s,
+                       updated_at=NOW(),
                        completed_at=CASE WHEN %s IN ('completed','failed','cancelled') THEN NOW() ELSE completed_at END
                    WHERE id=%s""",
                 (status, json.dumps(metadata) if metadata else None, error, status, job_id),
@@ -314,14 +403,21 @@ def orchestrate_kaggle_training(job_id: str, config: dict):
 
         # 1. Export dataset
         update_kaggle_job(job_id, "exporting_dataset")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".csv", prefix=f"{symbol.lower()}_features_", delete=False,
+        ) as tmp:
             csv_path = tmp.name
-        export_info = export_training_dataset(symbol, csv_path)
+        try:
+            export_info = export_training_dataset(symbol, csv_path)
 
-        # 2. Upload to Kaggle
-        update_kaggle_job(job_id, "uploading_dataset", {"export_info": export_info})
-        dataset_info = create_kaggle_dataset(symbol, csv_path, dataset_slug)
-        os.unlink(csv_path)
+            # 2. Upload to Kaggle
+            update_kaggle_job(job_id, "uploading_dataset", {"export_info": export_info})
+            dataset_info = create_kaggle_dataset(symbol, csv_path, dataset_slug)
+        finally:
+            try:
+                os.unlink(csv_path)
+            except OSError:
+                pass
 
         # 3. Push kernel
         update_kaggle_job(job_id, "triggering_kernel", {"dataset_info": dataset_info})
@@ -334,7 +430,6 @@ def orchestrate_kaggle_training(job_id: str, config: dict):
         log.info(f"[{job_id}] Training started on Kaggle: {kernel_info['kernel_url']}")
 
         # 4. Poll for completion
-        import time
         max_polls = int(os.getenv("KAGGLE_MAX_POLLS", "120"))  # 2h at 60s interval
         for _ in range(max_polls):
             # Check if job was cancelled
@@ -511,7 +606,7 @@ def start_kaggle_training(
 def list_kaggle_jobs(
     status: Optional[str] = None,
     approval_status: Optional[str] = None,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
     _user: dict = Depends(get_current_user),
 ):
     """List Kaggle training jobs with optional filters."""
@@ -718,8 +813,8 @@ def health():
     return {
         "status":           "ok",
         "service":          "kaggle-orchestrator",
-        "kaggle_configured": bool(KAGGLE_API_TOKEN),
-        "auth_method":      "API Token (Bearer)",
+        "kaggle_configured": bool(KAGGLE_API_TOKEN and KAGGLE_USERNAME),
+        "auth_method":      "HTTP Basic (username:apiKey)",
     }
 
 
