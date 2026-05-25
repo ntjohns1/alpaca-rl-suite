@@ -409,3 +409,104 @@ class TestQuotaEndpoint:
         resp = app_client.get("/kaggle/quota")
         assert resp.status_code == 200
         assert resp.json()["configured"] is False
+
+
+# ─── New kagglehub-based endpoint tests (ALPCA-36) ──────────────────────────
+
+class TestListDatasetsEndpoint:
+    def test_returns_datasets(self, app_client, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        mock_datasets = [
+            {"id": 1, "ref": "testuser/ds1", "title": "DS1", "slug": "ds1",
+             "url": "https://kaggle.com/datasets/testuser/ds1",
+             "totalBytes": 1000, "lastUpdated": "2026-01-01",
+             "currentVersionNumber": 1, "isPrivate": True, "downloadCount": 0},
+        ]
+        with patch("main.list_kaggle_datasets", return_value=mock_datasets):
+            resp = app_client.get("/kaggle/datasets")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["count"] == 1
+        assert body["datasets"][0]["title"] == "DS1"
+
+    def test_returns_502_on_kaggle_error(self, app_client, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        with patch("main.list_kaggle_datasets", side_effect=Exception("API down")):
+            resp = app_client.get("/kaggle/datasets")
+        assert resp.status_code == 502
+
+
+class TestUploadDatasetEndpoint:
+    def test_uploads_and_returns_201(self, app_client, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        with patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "SPY"}), \
+             patch("main.upload_dataset_to_kaggle", return_value={
+                 "dataset_slug": "alpaca-rl-spy",
+                 "url": "https://kaggle.com/datasets/testuser/alpaca-rl-spy",
+                 "status": "success",
+             }), \
+             patch("os.unlink"):
+            resp = app_client.post("/kaggle/datasets/upload", json={
+                "symbol": "SPY",
+            })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["status"] == "uploaded"
+        assert body["symbol"] == "SPY"
+        assert "kaggleUrl" in body
+
+    def test_uses_default_slug(self, app_client, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        with patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "AAPL"}), \
+             patch("main.upload_dataset_to_kaggle", return_value={
+                 "dataset_slug": "alpaca-rl-aapl",
+                 "url": "https://kaggle.com/datasets/testuser/alpaca-rl-aapl",
+                 "status": "success",
+             }) as mock_upload, \
+             patch("os.unlink"):
+            resp = app_client.post("/kaggle/datasets/upload", json={
+                "symbol": "AAPL",
+            })
+        assert resp.status_code == 201
+        assert resp.json()["datasetSlug"] == "alpaca-rl-aapl"
+
+
+class TestDownloadModelEndpoint:
+    def test_downloads_and_returns_201(self, app_client, monkeypatch, tmp_path):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+
+        def fake_download(slug, output_dir):
+            # Create a fake model file in the output dir
+            model_path = os.path.join(output_dir, "policy_best.zip")
+            with open(model_path, "wb") as f:
+                f.write(b"fake-model-data")
+            return output_dir
+
+        with patch("main.download_model_via_kagglehub", side_effect=fake_download), \
+             patch("main.upload_model_to_minio", return_value="s3://bucket/models/model.zip"):
+            resp = app_client.post("/kaggle/models/download", json={
+                "kernelSlug": "alpaca-rl-training",
+            })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["status"] == "uploaded_to_minio"
+        assert body["modelFile"] == "policy_best.zip"
+
+    def test_returns_404_when_no_model_files(self, app_client, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+
+        def fake_download(slug, output_dir):
+            # Don't create any files
+            return output_dir
+
+        with patch("main.download_model_via_kagglehub", side_effect=fake_download):
+            resp = app_client.post("/kaggle/models/download", json={
+                "kernelSlug": "alpaca-rl-training",
+            })
+        assert resp.status_code == 404

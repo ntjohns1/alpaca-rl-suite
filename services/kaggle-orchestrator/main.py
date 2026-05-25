@@ -12,12 +12,14 @@ import json
 import logging
 import hashlib
 import os
+import shutil
 import sys
 import tempfile
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Optional
 
 import boto3
+import kagglehub
 import pandas as pd
 import psycopg2
 import requests
@@ -134,7 +136,8 @@ def export_training_dataset(symbol: str, output_path: str) -> dict:
 
 
 def _upload_blob(file_path: str, file_name: str) -> str:
-    """Upload a file via the Kaggle blob API and return the blob token."""
+    """Legacy blob upload – kept only for backward compatibility in tests.
+    Production code now uses kagglehub.dataset_upload() instead."""
     file_size = os.path.getsize(file_path)
     auth = _kaggle_auth()
 
@@ -214,7 +217,74 @@ def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict
 
 
 # ─────────────────────────────────────────
-# Kernel triggering & polling
+# Kaggle dataset & model operations (kagglehub)
+# ─────────────────────────────────────────
+def upload_dataset_to_kaggle(symbol: str, csv_path: str, dataset_slug: str) -> dict:
+    """Upload a dataset to Kaggle using kagglehub.
+
+    kagglehub.dataset_upload() handles create-or-update automatically.
+    The CSV file must be in a directory by itself (kagglehub uploads the dir).
+    """
+    handle = f"{KAGGLE_USERNAME}/{dataset_slug}"
+
+    # kagglehub expects a directory, so stage the CSV in a temp dir
+    with tempfile.TemporaryDirectory() as staging_dir:
+        staged = os.path.join(staging_dir, os.path.basename(csv_path))
+        # Copy (not move) so caller's file is preserved
+        shutil.copy2(csv_path, staged)
+
+        kagglehub.dataset_upload(
+            handle,
+            staging_dir,
+            version_notes=f"Updated {symbol} features",
+        )
+
+    log.info("Uploaded dataset to Kaggle via kagglehub: %s", handle)
+    return {
+        "dataset_slug": dataset_slug,
+        "url": f"https://www.kaggle.com/datasets/{handle}",
+        "status": "success",
+    }
+
+
+def list_kaggle_datasets() -> list[dict]:
+    """List the authenticated user's Kaggle datasets.
+
+    kagglehub doesn't expose a list API, so we use the REST endpoint
+    /datasets/list?group=my which returns datasets owned by the authed user.
+    """
+    data = kaggle_request("GET", "/datasets/list", params={"group": "my"})
+    return [
+        {
+            "id": ds.get("id"),
+            "ref": ds.get("ref"),
+            "title": ds.get("title"),
+            "slug": (ds.get("ref") or "").split("/")[-1],
+            "url": ds.get("url"),
+            "totalBytes": ds.get("totalBytes"),
+            "lastUpdated": ds.get("lastUpdated"),
+            "currentVersionNumber": ds.get("currentVersionNumber"),
+            "isPrivate": ds.get("isPrivate"),
+            "downloadCount": ds.get("downloadCount"),
+        }
+        for ds in data
+    ]
+
+
+def download_model_via_kagglehub(kernel_slug: str, output_dir: str) -> str:
+    """Download trained model from Kaggle notebook output using kagglehub.
+
+    Uses kagglehub.notebook_output_download() which handles auth and
+    caching automatically. We copy the results to output_dir.
+    """
+    handle = f"{KAGGLE_USERNAME}/{kernel_slug}"
+    cache_path = kagglehub.notebook_output_download(handle, output_dir=output_dir)
+    log.info("Downloaded notebook output via kagglehub to %s", cache_path)
+    return cache_path
+
+
+# ─────────────────────────────────────────
+# Kernel triggering (legacy — kept for existing orchestration flow)
 # ─────────────────────────────────────────
 def _get_kernel_id(kernel_slug: str) -> int | None:
     """Look up the numeric kernel ID via the /kernels/pull endpoint.
@@ -565,6 +635,17 @@ class RejectionRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class DatasetUploadRequest(BaseModel):
+    """Upload a dataset to Kaggle from exported features."""
+    symbol: str
+    datasetSlug: Optional[str] = None
+
+
+class ModelDownloadRequest(BaseModel):
+    """Download model from a Kaggle notebook output."""
+    kernelSlug: str = "alpaca-rl-training"
+
+
 # ─────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────
@@ -799,6 +880,89 @@ def health():
         "service":          "kaggle-orchestrator",
         "kaggle_configured": bool(KAGGLE_API_TOKEN and KAGGLE_USERNAME),
         "auth_method":      "HTTP Basic (username:apiKey)",
+    }
+
+
+# ─────────────────────────────────────────
+# New kagglehub-based endpoints (ALPCA-36)
+# ─────────────────────────────────────────
+@app.get("/kaggle/datasets")
+def list_datasets(_user: dict = Depends(get_current_user)):
+    """List the authenticated user's datasets on Kaggle."""
+    try:
+        datasets = list_kaggle_datasets()
+        return {"datasets": datasets, "count": len(datasets)}
+    except Exception as e:
+        log.error("Failed to list Kaggle datasets: %s", e, exc_info=True)
+        raise HTTPException(status_code=502, detail=f"Kaggle API error: {e}")
+
+
+@app.post("/kaggle/datasets/upload", status_code=201)
+def upload_dataset(
+    req: DatasetUploadRequest,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
+    """Export features for a symbol and upload to Kaggle as a dataset."""
+    symbol = req.symbol.upper()
+    dataset_slug = req.datasetSlug or f"alpaca-rl-{symbol.lower()}"
+
+    # Export synchronously (fast), then upload in background
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".csv", prefix=f"{symbol.lower()}_features_", delete=False,
+    ) as tmp:
+        csv_path = tmp.name
+
+    try:
+        export_info = export_training_dataset(symbol, csv_path)
+        result = upload_dataset_to_kaggle(symbol, csv_path, dataset_slug)
+    finally:
+        try:
+            os.unlink(csv_path)
+        except OSError:
+            pass
+
+    return {
+        "symbol": symbol,
+        "datasetSlug": dataset_slug,
+        "exportInfo": export_info,
+        "kaggleUrl": result["url"],
+        "status": "uploaded",
+    }
+
+
+@app.post("/kaggle/models/download", status_code=201)
+def download_model(
+    req: ModelDownloadRequest,
+    background_tasks: BackgroundTasks,
+    _user: dict = Depends(get_current_user),
+):
+    """Download model from Kaggle notebook output and upload to MinIO."""
+    kernel_slug = req.kernelSlug
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        download_model_via_kagglehub(kernel_slug, tmpdir)
+
+        # Find model files (.zip or .pt)
+        model_files = [
+            f for f in os.listdir(tmpdir)
+            if f.endswith((".zip", ".pt", ".pth", ".onnx"))
+        ]
+        if not model_files:
+            # Fall back to any file
+            model_files = [f for f in os.listdir(tmpdir) if os.path.isfile(os.path.join(tmpdir, f))]
+        if not model_files:
+            raise HTTPException(status_code=404, detail="No model files found in notebook output")
+
+        s3_key = f"models/kaggle/{kernel_slug}/{model_files[0]}"
+        model_path = os.path.join(tmpdir, model_files[0])
+        s3_path = upload_model_to_minio(model_path, s3_key)
+
+    return {
+        "kernelSlug": kernel_slug,
+        "modelFile": model_files[0],
+        "s3Path": s3_path,
+        "status": "uploaded_to_minio",
     }
 
 
