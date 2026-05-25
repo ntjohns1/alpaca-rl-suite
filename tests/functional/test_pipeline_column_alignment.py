@@ -256,6 +256,13 @@ def _install_stubs():
         pydantic.field_validator = _field_validator
         sys.modules["pydantic"] = pydantic
 
+    if "kagglehub" not in sys.modules:
+        kagglehub = types.ModuleType("kagglehub")
+        kagglehub.dataset_upload = lambda *args, **kwargs: None
+        kagglehub.notebook_output_download = lambda *args, **kwargs: ""
+        kagglehub.dataset_download = lambda *args, **kwargs: ""
+        sys.modules["kagglehub"] = kagglehub
+
     if "psycopg2" not in sys.modules:
         psycopg2 = types.ModuleType("psycopg2")
         psycopg2.connect = lambda *args, **kwargs: _MockConn()

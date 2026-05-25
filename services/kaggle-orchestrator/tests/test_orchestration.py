@@ -7,8 +7,6 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
