@@ -25,17 +25,16 @@ export const fetchServices   = () => request<ServiceHealth>('/dashboard/services
 export const fetchActivity   = (limit = 20) => request<ActivityFeed>(`/dashboard/activity?limit=${limit}`)
 
 // ── Training / Kaggle ──────────────────────────────────────
-export const startTraining   = (payload: TrainPayload) => request<TrainResponse>('/kaggle/train', { method: 'POST', body: JSON.stringify(payload) })
 export const fetchJobs       = (status?: string) => request<KaggleJob[]>(`/kaggle/jobs${status ? `?status=${encodeURIComponent(status)}` : ''}`)
 export const fetchJob        = (id: string) => request<KaggleJob>(`/kaggle/jobs/${encodeURIComponent(id)}`)
 export const cancelJob       = (id: string) => request<KaggleJob>(`/kaggle/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
-// approved_by / promoted_by intentionally omitted: backend will derive identity
-// from the validated JWT once libs/auth lands in kaggle-orchestrator + rl-train
-// (deferred plan Step 5). Until then, current backends still expect a body but
-// it is no longer authoritative.
 export const approveJob      = (id: string) => request<ApprovalResponse>(`/kaggle/jobs/${encodeURIComponent(id)}/approve-promotion`, { method: 'POST', body: JSON.stringify({}) })
 export const rejectJob       = (id: string, reason?: string) => request<ApprovalResponse>(`/kaggle/jobs/${encodeURIComponent(id)}/reject-promotion`, { method: 'POST', body: JSON.stringify({ reason }) })
-export const fetchQuota      = () => request<KaggleQuota>('/kaggle/quota')
+
+// ── Kaggle Datasets & Models ──────────────────────────────
+export const fetchKaggleDatasets = () => request<KaggleDatasetsResponse>('/kaggle/datasets')
+export const uploadToKaggle      = (symbol: string, datasetSlug?: string) => request<KaggleUploadResponse>('/kaggle/datasets/upload', { method: 'POST', body: JSON.stringify({ symbol, datasetSlug }) })
+export const downloadModel       = (kernelSlug: string) => request<ModelDownloadResponse>('/kaggle/models/download', { method: 'POST', body: JSON.stringify({ kernelSlug }) })
 
 // ── Backtest ───────────────────────────────────────────────
 export const runBacktest     = (payload: BacktestPayload) => request<BacktestResponse>('/backtest/run', { method: 'POST', body: JSON.stringify(payload) })
@@ -124,23 +123,6 @@ export interface ActivityEvent {
   timestamp: string
 }
 
-export interface TrainPayload {
-  name: string
-  symbols: string[]
-  totalTimesteps?: number
-  kernelSlug?: string
-  learningRate?: number
-  batchSize?: number
-  gamma?: number
-}
-
-export interface TrainResponse {
-  jobId: string
-  status: string
-  name: string
-  message: string
-}
-
 export interface KaggleJob {
   id: string
   name: string
@@ -155,12 +137,37 @@ export interface KaggleJob {
   completed_at?: string
 }
 
-export interface KaggleQuota {
-  username?: string
-  gpuQuota?: number
-  gpuUsed?: number
-  gpuRemaining?: number
-  error?: string
+export interface KaggleDataset {
+  id: number
+  ref: string
+  title: string
+  slug: string
+  url: string
+  totalBytes: number | null
+  lastUpdated: string
+  currentVersionNumber: number
+  isPrivate: boolean
+  downloadCount: number
+}
+
+export interface KaggleDatasetsResponse {
+  datasets: KaggleDataset[]
+  count: number
+}
+
+export interface KaggleUploadResponse {
+  symbol: string
+  datasetSlug: string
+  exportInfo: Record<string, unknown>
+  kaggleUrl: string
+  status: string
+}
+
+export interface ModelDownloadResponse {
+  kernelSlug: string
+  modelFile: string
+  s3Path: string
+  status: string
 }
 
 export interface ApprovalResponse {
