@@ -1,13 +1,11 @@
 """
 Kaggle Orchestrator Service
-Manages Kaggle training job lifecycle:
-- Exports datasets from PostgreSQL to Kaggle
-- Triggers Kaggle notebook runs via API
-- Polls for training completion
-- Downloads trained models back to MinIO
-- Manual approval gates before policy promotion
+Manages Kaggle integration for the Alpaca RL Suite:
+- Exports feature datasets from PostgreSQL and uploads to Kaggle
+- Lists user's Kaggle datasets
+- Downloads trained models from Kaggle notebook output to MinIO
+- Job tracking, approval gates, and policy promotion
 """
-import asyncio
 import json
 import logging
 import hashlib
@@ -16,16 +14,15 @@ import shutil
 import sys
 import tempfile
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Optional
+from typing import Optional
 
 import boto3
 import kagglehub
 import pandas as pd
 import psycopg2
 import requests
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from fastapi import Depends, FastAPI, HTTPException, Query
+from pydantic import BaseModel
 from requests.auth import HTTPBasicAuth
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
@@ -55,14 +52,6 @@ KAGGLE_ORCHESTRATOR_PORT = int(os.getenv("KAGGLE_ORCHESTRATOR_PORT", "8011"))
 BACKTEST_SERVICE_URL     = os.getenv("BACKTEST_SERVICE_URL", "http://backtest:8001")
 
 KAGGLE_API_BASE = "https://www.kaggle.com/api/v1"
-KAGGLE_BLOB_API_BASE = "https://api.kaggle.com/v1"
-
-# In Docker the notebook is at /kaggle/notebooks/; locally it's two levels up.
-_LOCAL_NOTEBOOK = os.path.join(
-    os.path.dirname(__file__), "..", "..", "kaggle", "notebooks", "alpaca-rl-training.ipynb"
-)
-_DOCKER_NOTEBOOK = "/kaggle/notebooks/alpaca-rl-training.ipynb"
-NOTEBOOK_PATH = _LOCAL_NOTEBOOK if os.path.isfile(_LOCAL_NOTEBOOK) else _DOCKER_NOTEBOOK
 
 
 # ─────────────────────────────────────────
@@ -135,87 +124,6 @@ def export_training_dataset(symbol: str, output_path: str) -> dict:
     }
 
 
-def _upload_blob(file_path: str, file_name: str) -> str:
-    """Legacy blob upload – kept only for backward compatibility in tests.
-    Production code now uses kagglehub.dataset_upload() instead."""
-    file_size = os.path.getsize(file_path)
-    auth = _kaggle_auth()
-
-    blob_url = f"{KAGGLE_BLOB_API_BASE}/blobs.BlobApiService/StartBlobUpload"
-    start_resp = requests.post(
-        blob_url,
-        json={"type": "DATASET", "name": file_name, "contentLength": file_size, "contentType": "text/csv"},
-        auth=auth,
-        timeout=KAGGLE_REQUEST_TIMEOUT,
-    )
-    if start_resp.status_code >= 400:
-        log.error("Blob API %s @ %s: %s", start_resp.status_code, blob_url, start_resp.text)
-    start_resp.raise_for_status()
-    try:
-        blob_info = start_resp.json()
-    except ValueError:
-        log.error("Blob API returned non-JSON response: %s", start_resp.text[:500])
-        raise
-
-    create_url = blob_info.get("createUrl")
-    token = blob_info.get("token")
-    if not create_url or not token:
-        raise ValueError(
-            f"Unexpected StartBlobUpload response (missing createUrl or token): {blob_info}"
-        )
-
-    with open(file_path, "rb") as f:
-        put_resp = requests.put(
-            create_url, data=f,
-            headers={"Content-Type": "text/csv", "Content-Length": str(file_size)},
-            timeout=600,
-        )
-    put_resp.raise_for_status()
-
-    return token
-
-
-def create_kaggle_dataset(symbol: str, csv_path: str, dataset_slug: str) -> dict:
-    """Create or update a Kaggle dataset via REST API (no CLI)."""
-    file_name = os.path.basename(csv_path)
-    blob_token = _upload_blob(csv_path, file_name)
-
-    body = {
-        "title": f"Alpaca RL Trading Data - {symbol}",
-        "slug": dataset_slug,
-        "ownerSlug": KAGGLE_USERNAME,
-        "licenseName": "CC0-1.0",
-        "isPrivate": True,
-        "files": [{"token": blob_token, "description": f"Daily features for {symbol}"}],
-    }
-
-    try:
-        kaggle_request("POST", "/datasets/create/new", json=body)
-        log.info("Created Kaggle dataset: %s", dataset_slug)
-    except requests.HTTPError as exc:
-        if exc.response is not None and exc.response.status_code == 409:
-            version_body = {
-                "convertToBigQuery": False,
-                "deleteOldVersions": False,
-                "versionNotes": "Updated data",
-                "files": [{"token": blob_token, "description": f"Daily features for {symbol}"}],
-            }
-            kaggle_request(
-                "POST",
-                f"/datasets/create/version/{KAGGLE_USERNAME}/{dataset_slug}",
-                json=version_body,
-            )
-            log.info("Updated Kaggle dataset: %s", dataset_slug)
-        else:
-            raise
-
-    return {
-        "dataset_slug": dataset_slug,
-        "url": f"https://www.kaggle.com/datasets/{KAGGLE_USERNAME}/{dataset_slug}",
-        "status": "success",
-    }
-
-
 # ─────────────────────────────────────────
 # Kaggle dataset & model operations (kagglehub)
 # ─────────────────────────────────────────
@@ -281,139 +189,6 @@ def download_model_via_kagglehub(kernel_slug: str, output_dir: str) -> str:
     cache_path = kagglehub.notebook_output_download(handle, output_dir=output_dir)
     log.info("Downloaded notebook output via kagglehub to %s", cache_path)
     return cache_path
-
-
-# ─────────────────────────────────────────
-# Kernel triggering (legacy — kept for existing orchestration flow)
-# ─────────────────────────────────────────
-def _get_kernel_id(kernel_slug: str) -> int | None:
-    """Look up the numeric kernel ID via the /kernels/pull endpoint.
-
-    The /kernels/list endpoint returns id=0 for all kernels, so we use
-    /kernels/pull which returns full metadata including the real numeric ID.
-    Returns None if the kernel doesn't exist yet.
-    """
-    try:
-        data = kaggle_request(
-            "GET", f"/kernels/pull/{KAGGLE_USERNAME}/{kernel_slug}",
-        )
-        kid = (data.get("metadata") or {}).get("id")
-        if kid and kid > 0:
-            return kid
-        log.warning("Kernel %s pull returned invalid id=%s", kernel_slug, kid)
-    except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
-            log.info("Kernel %s not found (404), will create new", kernel_slug)
-        else:
-            log.warning("Failed to look up kernel ID for %s: %s", kernel_slug, e)
-    except Exception as e:
-        log.warning("Failed to look up kernel ID for %s: %s", kernel_slug, e)
-    return None
-
-
-def push_kaggle_kernel(kernel_slug: str, dataset_slug: str) -> dict:
-    """Push kernel via REST API to trigger execution, including the bundled notebook source."""
-    notebook_file = os.environ.get("KAGGLE_NOTEBOOK_PATH", NOTEBOOK_PATH)
-    if not os.path.isfile(notebook_file):
-        raise FileNotFoundError(f"Notebook not found: {notebook_file}")
-    with open(notebook_file) as f:
-        nb = json.load(f)
-    # Strip saved cell outputs to avoid bloating the push payload
-    for cell in nb.get("cells", []):
-        if cell.get("cell_type") == "code":
-            cell["outputs"] = []
-            cell["execution_count"] = None
-    notebook_source = json.dumps(nb)
-
-    body = {
-        "title": "Alpaca RL Training",
-        "text": notebook_source,
-        "language": "python",
-        "kernelType": "notebook",
-        "isPrivate": True,
-        "enableGpu": True,
-        "enableInternet": False,
-        "datasetDataSources": [f"{KAGGLE_USERNAME}/{dataset_slug}"],
-        "competitionDataSources": [],
-        "kernelDataSources": [],
-        "categoryIds": [],
-    }
-
-    # The Kaggle API expects a numeric integer ID for existing kernels.
-    # If the kernel doesn't exist yet, we create a new one via newTitle + slug.
-    kernel_id = _get_kernel_id(kernel_slug)
-    if kernel_id is not None:
-        body["id"] = kernel_id
-        body["slug"] = kernel_slug
-        log.info("Pushing to existing kernel ID %d (%s)", kernel_id, kernel_slug)
-    else:
-        body["newTitle"] = "Alpaca RL Training"
-        body["slug"] = kernel_slug
-        log.info("Creating new kernel: %s", kernel_slug)
-
-    resp = kaggle_request("POST", "/kernels/push", json=body)
-    log.info("Kernel push response: %s", resp)
-
-    # Check for API-level errors (e.g. missing title, invalid ID)
-    if resp.get("hasError") or resp.get("error"):
-        raise RuntimeError(f"Kaggle kernels/push failed: {resp.get('error', resp.get('errorNullable', 'unknown'))}")
-
-    return {
-        "status": "triggered",
-        "kernel_url": f"https://www.kaggle.com/code/{KAGGLE_USERNAME}/{kernel_slug}",
-        "version_number": resp.get("versionNumber"),
-    }
-
-
-    # NOTE: Kaggle v1 /kernels/status/ endpoint is unavailable with current
-    # auth tokens (returns HTML 404).  Automated status polling has been
-    # removed.  Use the /kaggle/jobs/{id}/complete endpoint to manually
-    # trigger model download after confirming the kernel finished on
-    # kaggle.com.  See ALPCA-35 for the broader simplification plan.
-
-
-# ─────────────────────────────────────────
-# Model download & upload
-# ─────────────────────────────────────────
-def download_model_from_kaggle(kernel_slug: str, output_dir: str) -> str:
-    """Download trained model from Kaggle kernel output via REST API."""
-    data = kaggle_request(
-        "GET", "/kernels/output",
-        params={"userName": KAGGLE_USERNAME, "kernelSlug": kernel_slug},
-    )
-
-    files = data.get("files", [])
-    if not files:
-        raise ValueError(f"No output files returned for kernel {kernel_slug}")
-
-    os.makedirs(output_dir, exist_ok=True)
-    downloaded = 0
-    for file_info in files:
-        file_url = file_info.get("url")
-        raw_name = file_info.get("fileName", file_info.get("name", "output"))
-        file_name = os.path.basename(raw_name)  # sanitize: prevent path traversal
-        if not file_name:
-            log.warning("Skipping file with empty name: %s", file_info)
-            continue
-        if not file_url:
-            log.warning("Skipping file with no URL: %s", file_info)
-            continue
-        log.info("Downloading kernel output file: %s", file_name)
-        # Don't send Kaggle credentials to third-party download URLs (e.g. GCS)
-        dl_resp = requests.get(file_url, stream=True, timeout=600)
-        dl_resp.raise_for_status()
-        dest = os.path.join(output_dir, file_name)
-        with open(dest, "wb") as f:
-            for chunk in dl_resp.iter_content(chunk_size=8192):
-                f.write(chunk)
-        downloaded += 1
-
-    if downloaded == 0:
-        raise ValueError(
-            f"All {len(files)} output file(s) for kernel {kernel_slug} lacked download URLs"
-        )
-    log.info("Downloaded %d file(s) from Kaggle kernel output to %s", downloaded, output_dir)
-    return output_dir
 
 
 def upload_model_to_minio(local_path: str, s3_key: str) -> str:
@@ -489,85 +264,6 @@ def trigger_backtest_for_job(job_id: str, policy_id: str, symbol: str):
 
 
 # ─────────────────────────────────────────
-# Orchestration workflow
-# ─────────────────────────────────────────
-def orchestrate_kaggle_training(job_id: str, config: dict):
-    """
-    Full automated workflow (runs in a background thread):
-    1. Export dataset
-    2. Upload to Kaggle datasets
-    3. Push kernel (triggers execution)
-    4. Poll until complete
-    5. Download model → MinIO
-    6. Trigger backtest
-    7. Wait for manual approval before promotion
-    """
-    try:
-        symbol       = config["symbols"][0]
-        dataset_slug = config.get("datasetSlug") or f"alpaca-rl-{symbol.lower()}"
-        kernel_slug  = config.get("kernelSlug") or "alpaca-rl-training"
-
-        # 1. Export dataset
-        update_kaggle_job(job_id, "exporting_dataset")
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".csv", prefix=f"{symbol.lower()}_features_", delete=False,
-        ) as tmp:
-            csv_path = tmp.name
-        try:
-            export_info = export_training_dataset(symbol, csv_path)
-
-            # 2. Upload to Kaggle
-            update_kaggle_job(job_id, "uploading_dataset", {"export_info": export_info})
-            dataset_info = create_kaggle_dataset(symbol, csv_path, dataset_slug)
-        finally:
-            try:
-                os.unlink(csv_path)
-            except OSError:
-                pass
-
-        # 3. Push kernel to Kaggle
-        update_kaggle_job(job_id, "triggering_kernel", {"dataset_info": dataset_info})
-        kernel_info = push_kaggle_kernel(kernel_slug, dataset_slug)
-        update_kaggle_job(job_id, "submitted_to_kaggle", {
-            "dataset_info": dataset_info,
-            "kernel_info": kernel_info,
-            "kaggle_url": kernel_info["kernel_url"],
-        })
-        log.info(
-            f"[{job_id}] Kernel pushed to Kaggle (version {kernel_info.get('version_number')}). "
-            f"Run it on kaggle.com, then use POST /kaggle/jobs/{job_id}/complete "
-            f"to download the model. {kernel_info['kernel_url']}"
-        )
-        # Automated polling removed — Kaggle v1 /kernels/status/ is broken.
-        # User triggers model download manually via /kaggle/jobs/{job_id}/complete
-        # after confirming the kernel finished on kaggle.com. See ALPCA-35.
-
-    except Exception as e:
-        log.error(f"[{job_id}] Orchestration failed: {e}", exc_info=True)
-        update_kaggle_job(job_id, "failed", error=str(e))
-
-
-def complete_kaggle_training(job_id: str, kernel_slug: str):
-    """Webhook-triggered: download model and upload to MinIO."""
-    try:
-        update_kaggle_job(job_id, "downloading_model")
-        with tempfile.TemporaryDirectory() as tmpdir:
-            download_model_from_kaggle(kernel_slug, tmpdir)
-            model_files = [f for f in os.listdir(tmpdir) if f.endswith(".zip")]
-            if not model_files:
-                raise ValueError("No model file found in Kaggle output")
-            model_path = os.path.join(tmpdir, model_files[0])
-            update_kaggle_job(job_id, "uploading_model")
-            s3_key  = f"models/kaggle/{job_id}/policy_best.zip"
-            s3_path = upload_model_to_minio(model_path, s3_key)
-            update_kaggle_job(job_id, "pending_approval", {"model_path": s3_path})
-            log.info(f"[{job_id}] Model uploaded. Awaiting approval.")
-    except Exception as e:
-        log.error(f"[{job_id}] Download/upload failed: {e}", exc_info=True)
-        update_kaggle_job(job_id, "failed", error=str(e))
-
-
-# ─────────────────────────────────────────
 # FastAPI App
 # ─────────────────────────────────────────
 @asynccontextmanager
@@ -616,21 +312,6 @@ app = FastAPI(title="Kaggle Orchestrator")
 # ─────────────────────────────────────────
 # Request / Response Models
 # ─────────────────────────────────────────
-class KaggleTrainingRequest(BaseModel):
-    name: str
-    symbols: list[str] = Field(..., min_length=1)
-    datasetSlug: Optional[str] = None
-    kernelSlug: str = "alpaca-rl-training"
-    totalTimesteps: int = 500_000
-    tradingDays: int = 252
-    tradingCostBps: float = 10
-    timeCostBps: float = 1
-    gamma: float = 0.99
-    learningRate: float = 1e-4
-    batchSize: int = 256
-    architecture: list[int] = Field(default=[256, 256])
-
-
 class RejectionRequest(BaseModel):
     reason: Optional[str] = None
 
@@ -649,24 +330,6 @@ class ModelDownloadRequest(BaseModel):
 # ─────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────
-@app.post("/kaggle/train", status_code=201)
-def start_kaggle_training(
-    req: KaggleTrainingRequest,
-    background_tasks: BackgroundTasks,
-    _user: dict = Depends(get_current_user),
-):
-    """Initiate a Kaggle training job (full automated workflow)."""
-    config = req.model_dump()
-    job_id = create_kaggle_job(req.name, config)
-    background_tasks.add_task(orchestrate_kaggle_training, job_id, config)
-    return {
-        "jobId": job_id,
-        "status": "preparing",
-        "name": req.name,
-        "message": f"Job initiated. Poll /kaggle/jobs/{job_id} or stream /kaggle/jobs/{job_id}/stream.",
-    }
-
-
 @app.get("/kaggle/jobs")
 def list_kaggle_jobs(
     status: Optional[str] = None,
@@ -703,52 +366,6 @@ def get_kaggle_job(job_id: str, _user: dict = Depends(get_current_user)):
     return get_job_row(job_id)
 
 
-@app.get("/kaggle/jobs/{job_id}/stream")
-async def stream_job_status(
-    job_id: str,
-    request: Request,
-    _user: dict = Depends(get_current_user),
-):
-    """
-    Server-Sent Events stream for real-time job status updates.
-    The client receives status changes as 'data: {json}' events.
-    """
-    async def event_generator() -> AsyncGenerator[str, None]:
-        last_status = None
-        for _ in range(300):  # max ~5 min at 1s interval
-            if await request.is_disconnected():
-                break
-            try:
-                row = get_job_row(job_id)
-                current_status = row["status"]
-                if current_status != last_status:
-                    last_status = current_status
-                    payload = json.dumps({
-                        "jobId":          job_id,
-                        "status":         current_status,
-                        "approvalStatus": row.get("approval_status"),
-                        "metadata":       row.get("metadata"),
-                        "error":          row.get("error"),
-                        "updatedAt":      str(row.get("updated_at", "")),
-                    })
-                    yield f"data: {payload}\n\n"
-                if current_status in ("completed", "failed", "cancelled", "pending_approval"):
-                    break
-            except Exception as e:
-                yield f"data: {json.dumps({'error': str(e)})}\n\n"
-                break
-            await asyncio.sleep(1)
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
-
 @app.post("/kaggle/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, _user: dict = Depends(get_current_user)):
     """Cancel a running or pending Kaggle job."""
@@ -757,18 +374,6 @@ def cancel_job(job_id: str, _user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=f"Job already in terminal state: {row['status']}")
     update_kaggle_job(job_id, "cancelled")
     return {"jobId": job_id, "status": "cancelled"}
-
-
-@app.post("/kaggle/jobs/{job_id}/complete")
-def complete_job(
-    job_id: str,
-    kernel_slug: str,
-    background_tasks: BackgroundTasks,
-    _user: dict = Depends(get_current_user),
-):
-    """Trigger model download from completed Kaggle kernel."""
-    background_tasks.add_task(complete_kaggle_training, job_id, kernel_slug)
-    return {"jobId": job_id, "status": "downloading_model"}
 
 
 @app.post("/kaggle/jobs/{job_id}/approve-promotion")
@@ -857,22 +462,6 @@ def reject_job_promotion(
     }
 
 
-@app.get("/kaggle/quota")
-def get_kaggle_quota(_user: dict = Depends(get_current_user)):
-    """Return Kaggle quota info.
-
-    The Kaggle REST API does not expose a user-profile or GPU-quota
-    endpoint via Basic auth, so we return a link to the settings page
-    where the user can check quota manually.
-    """
-    return {
-        "username":     KAGGLE_USERNAME or None,
-        "message":      "GPU quota is not available via the Kaggle API. Check the link below.",
-        "kaggle_url":   "https://www.kaggle.com/settings",
-        "configured":   bool(KAGGLE_API_TOKEN and KAGGLE_USERNAME),
-    }
-
-
 @app.get("/kaggle/health")
 def health():
     return {
@@ -884,7 +473,7 @@ def health():
 
 
 # ─────────────────────────────────────────
-# New kagglehub-based endpoints (ALPCA-36)
+# Dataset & model endpoints (kagglehub)
 # ─────────────────────────────────────────
 @app.get("/kaggle/datasets")
 def list_datasets(_user: dict = Depends(get_current_user)):
@@ -900,7 +489,6 @@ def list_datasets(_user: dict = Depends(get_current_user)):
 @app.post("/kaggle/datasets/upload", status_code=201)
 def upload_dataset(
     req: DatasetUploadRequest,
-    background_tasks: BackgroundTasks,
     _user: dict = Depends(get_current_user),
 ):
     """Export features for a symbol and upload to Kaggle as a dataset."""
@@ -934,7 +522,6 @@ def upload_dataset(
 @app.post("/kaggle/models/download", status_code=201)
 def download_model(
     req: ModelDownloadRequest,
-    background_tasks: BackgroundTasks,
     _user: dict = Depends(get_current_user),
 ):
     """Download model from Kaggle notebook output and upload to MinIO."""

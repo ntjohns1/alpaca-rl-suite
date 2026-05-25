@@ -207,28 +207,6 @@ class TestHealthEndpoint:
         assert resp.json()["service"] == "kaggle-orchestrator"
 
 
-class TestStartTrainingEndpoint:
-    def test_returns_201_with_job_id(self, app_client, mock_db_conn):
-        mock_conn, mock_cursor = mock_db_conn
-        mock_cursor.fetchone.return_value = ("job-uuid-1",)
-        with patch("main.orchestrate_kaggle_training"):
-            resp = app_client.post("/kaggle/train", json={
-                "name": "test-run",
-                "symbols": ["SPY"],
-            })
-        assert resp.status_code == 201
-        body = resp.json()
-        assert "jobId" in body
-        assert body["status"] == "preparing"
-
-    def test_rejects_empty_symbols(self, app_client):
-        resp = app_client.post("/kaggle/train", json={
-            "name": "bad-run",
-            "symbols": [],
-        })
-        assert resp.status_code == 422
-
-
 class TestListJobsEndpoint:
     def test_returns_list(self, app_client, mock_db_conn):
         empty_df = pd.DataFrame(columns=[
@@ -392,26 +370,7 @@ class TestApprovalEndpoints:
         assert resp.status_code == 400
 
 
-class TestQuotaEndpoint:
-    def test_returns_static_quota_info(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
-        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        resp = app_client.get("/kaggle/quota")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["username"] == "testuser"
-        assert body["configured"] is True
-        assert "kaggle_url" in body
-
-    def test_returns_unconfigured_when_missing_creds(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "")
-        monkeypatch.setattr("main.KAGGLE_USERNAME", "")
-        resp = app_client.get("/kaggle/quota")
-        assert resp.status_code == 200
-        assert resp.json()["configured"] is False
-
-
-# ─── New kagglehub-based endpoint tests (ALPCA-36) ──────────────────────────
+# ─── Dataset & model endpoint tests ──────────────────────────────────────────
 
 class TestListDatasetsEndpoint:
     def test_returns_datasets(self, app_client, monkeypatch):
