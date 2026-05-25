@@ -8,6 +8,7 @@ import { Training } from '@/pages/Training'
 import { Approvals } from '@/pages/Approvals'
 import { Policies } from '@/pages/Policies'
 import { Datasets } from '@/pages/Datasets'
+import { Backtests } from '@/pages/Backtests'
 import { Monitoring } from '@/pages/Monitoring'
 import { fetchOverview } from '@/api/client'
 
@@ -36,6 +37,7 @@ export default function App() {
             <Route path="/approvals" element={<Approvals />} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/datasets" element={<Datasets />} />
+            <Route path="/backtests" element={<Backtests />} />
             <Route path="/monitoring" element={<Monitoring />} />
           </Routes>
         </div>

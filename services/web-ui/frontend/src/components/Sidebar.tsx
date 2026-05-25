@@ -5,6 +5,7 @@ import {
   ShieldCheck,
   Brain,
   Database,
+  BarChart3,
   Activity,
   LogOut,
   User,
@@ -27,6 +28,7 @@ export function Sidebar({ pendingApprovals }: { pendingApprovals?: number }) {
     { to: '/approvals',  label: 'Approvals',  icon: ShieldCheck, badge: pendingApprovals },
     { to: '/policies',   label: 'Policies',   icon: Brain },
     { to: '/datasets',   label: 'Datasets',   icon: Database },
+    { to: '/backtests',  label: 'Backtests',  icon: BarChart3 },
     { to: '/monitoring', label: 'Monitoring', icon: Activity },
   ]
 
