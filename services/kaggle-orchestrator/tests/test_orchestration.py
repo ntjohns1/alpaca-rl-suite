@@ -63,7 +63,7 @@ class TestUploadDatasetToKaggle:
 class TestListKaggleDatasets:
     def test_returns_formatted_list(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
 
         raw_response = [
             {
@@ -89,7 +89,7 @@ class TestListKaggleDatasets:
 
     def test_handles_empty_list(self, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
 
         with patch("main.kaggle_request", return_value=[]):
             from main import list_kaggle_datasets

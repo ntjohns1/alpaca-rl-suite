@@ -141,14 +141,14 @@ class TestExportTrainingDataset:
 
 class TestKaggleRequest:
     def test_raises_without_credentials(self, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "")
+        monkeypatch.setattr("main.KAGGLE_KEY", "")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "")
         import main
-        with pytest.raises(ValueError, match="KAGGLE_USERNAME and KAGGLE_API_TOKEN"):
+        with pytest.raises(ValueError, match="KAGGLE_USERNAME and KAGGLE_KEY"):
             main.kaggle_request("GET", "/test")
 
     def test_raises_on_http_error(self, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         mock_resp = MagicMock()
         mock_resp.status_code = 403
@@ -161,7 +161,7 @@ class TestKaggleRequest:
                 main.kaggle_request("GET", "/test")
 
     def test_returns_json_on_success(self, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         mock_resp = MagicMock()
         mock_resp.status_code = 200
@@ -374,7 +374,7 @@ class TestApprovalEndpoints:
 
 class TestListDatasetsEndpoint:
     def test_returns_datasets(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         mock_datasets = [
             {"id": 1, "ref": "testuser/ds1", "title": "DS1", "slug": "ds1",
@@ -390,7 +390,7 @@ class TestListDatasetsEndpoint:
         assert body["datasets"][0]["title"] == "DS1"
 
     def test_returns_502_on_kaggle_error(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         with patch("main.list_kaggle_datasets", side_effect=Exception("API down")):
             resp = app_client.get("/kaggle/datasets")
@@ -399,7 +399,7 @@ class TestListDatasetsEndpoint:
 
 class TestUploadDatasetEndpoint:
     def test_uploads_and_returns_201(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         with patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "SPY"}), \
              patch("main.upload_dataset_to_kaggle", return_value={
@@ -418,7 +418,7 @@ class TestUploadDatasetEndpoint:
         assert "kaggleUrl" in body
 
     def test_uses_default_slug(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
         with patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "AAPL"}), \
              patch("main.upload_dataset_to_kaggle", return_value={
@@ -436,7 +436,7 @@ class TestUploadDatasetEndpoint:
 
 class TestDownloadModelEndpoint:
     def test_downloads_and_returns_201(self, app_client, monkeypatch, tmp_path):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
 
         def fake_download(slug, output_dir):
@@ -457,7 +457,7 @@ class TestDownloadModelEndpoint:
         assert body["modelFile"] == "policy_best.zip"
 
     def test_returns_404_when_no_model_files(self, app_client, monkeypatch):
-        monkeypatch.setattr("main.KAGGLE_API_TOKEN", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
 
         def fake_download(slug, output_dir):
