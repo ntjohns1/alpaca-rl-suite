@@ -15,7 +15,7 @@ REPO_DIR="${DEPLOY_REPO_DIR:-/opt/alpaca-rl-suite}"
 STACK_NAME="alpaca-rl"
 STACK_FILE="$REPO_DIR/infra/docker-stack.yml"
 ENV_PRODUCTION="$REPO_DIR/infra/.env.production"
-CONVERGE_TIMEOUT=120  # seconds
+CONVERGE_TIMEOUT=300  # seconds — must exceed the slowest service's start-first cycle
 
 echo "=== CD Deploy: ${GITHUB_SHA:-unknown} ==="
 echo "Repo dir:   $REPO_DIR"
@@ -97,6 +97,15 @@ echo "=== Deploying Stack: $STACK_NAME ==="
 docker stack deploy -c "$STACK_FILE" "$STACK_NAME" --with-registry-auth
 
 # ── Wait for convergence ──────────────────────────────────────────────
+# The convergence check must account for `start-first` rolling updates:
+# Docker Swarm starts a new task before stopping the old one, creating a
+# temporary RUNNING/DESIRED mismatch (e.g. 2/1). If we only check replica
+# counts, we may exit the loop before slow-starting services have begun
+# their update — they still show 1/1 on the old image. The final check
+# then catches them mid-update at 2/1 and falsely declares failure.
+#
+# Fix: also check each service's UpdateStatus. A service whose update is
+# still "updating" is not converged, even if replicas momentarily match.
 echo ""
 echo "=== Waiting for services to converge (timeout: ${CONVERGE_TIMEOUT}s) ==="
 
@@ -109,11 +118,18 @@ while [ $ELAPSED -lt $CONVERGE_TIMEOUT ]; do
 
   NOT_READY=()
   for svc in $(docker stack services "$STACK_NAME" --format '{{.Name}}'); do
+    # Check replica count
     REPLICAS_INFO=$(docker service ls --filter "name=$svc" --format '{{.Replicas}}')
     RUNNING=$(echo "$REPLICAS_INFO" | cut -d/ -f1)
     DESIRED=$(echo "$REPLICAS_INFO" | cut -d/ -f2)
+
+    # Check update state — "updating" means the rolling update is in progress
+    UPDATE_STATE=$(docker service inspect "$svc" --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}' 2>/dev/null || echo "")
+
     if [ "$RUNNING" != "$DESIRED" ]; then
-      NOT_READY+=("$svc ($RUNNING/$DESIRED)")
+      NOT_READY+=("$svc ($RUNNING/$DESIRED update:${UPDATE_STATE:-n/a})")
+    elif [ "$UPDATE_STATE" = "updating" ]; then
+      NOT_READY+=("$svc ($RUNNING/$DESIRED update:updating)")
     fi
   done
 
@@ -131,7 +147,9 @@ for svc in $(docker stack services "$STACK_NAME" --format '{{.Name}}'); do
   REPLICAS_INFO=$(docker service ls --filter "name=$svc" --format '{{.Replicas}}')
   RUNNING=$(echo "$REPLICAS_INFO" | cut -d/ -f1)
   DESIRED=$(echo "$REPLICAS_INFO" | cut -d/ -f2)
-  if [ "$RUNNING" != "$DESIRED" ]; then
+  UPDATE_STATE=$(docker service inspect "$svc" --format '{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}' 2>/dev/null || echo "")
+
+  if [ "$RUNNING" != "$DESIRED" ] || [ "$UPDATE_STATE" = "updating" ]; then
     FAILED+=("$svc")
   fi
 done
