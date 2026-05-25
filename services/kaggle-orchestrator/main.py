@@ -46,7 +46,8 @@ S3_ENDPOINT              = os.getenv("S3_ENDPOINT", "http://minio:9000")
 S3_BUCKET                = os.getenv("S3_BUCKET", "alpaca-rl-artifacts")
 S3_ACCESS_KEY            = os.getenv("S3_ACCESS_KEY", "minioadmin")
 S3_SECRET_KEY            = os.getenv("S3_SECRET_KEY", "minioadmin")
-KAGGLE_API_TOKEN         = os.getenv("KAGGLE_API_TOKEN", "")
+KAGGLE_API_TOKEN         = os.getenv("KAGGLE_API_TOKEN", "")  # KGAT_ OAuth token (for kagglehub)
+KAGGLE_KEY               = os.getenv("KAGGLE_KEY", "")       # Legacy API key (for REST basic auth)
 KAGGLE_USERNAME          = os.getenv("KAGGLE_USERNAME", "")
 KAGGLE_ORCHESTRATOR_PORT = int(os.getenv("KAGGLE_ORCHESTRATOR_PORT", "8011"))
 BACKTEST_SERVICE_URL     = os.getenv("BACKTEST_SERVICE_URL", "http://backtest:8001")
@@ -71,9 +72,10 @@ def get_conn():
 
 
 def _kaggle_auth() -> HTTPBasicAuth:
-    if not KAGGLE_USERNAME or not KAGGLE_API_TOKEN:
-        raise ValueError("KAGGLE_USERNAME and KAGGLE_API_TOKEN must be set")
-    return HTTPBasicAuth(KAGGLE_USERNAME, KAGGLE_API_TOKEN)
+    """Basic auth for legacy Kaggle REST API (uses KAGGLE_KEY, not the KGAT_ OAuth token)."""
+    if not KAGGLE_USERNAME or not KAGGLE_KEY:
+        raise ValueError("KAGGLE_USERNAME and KAGGLE_KEY must be set")
+    return HTTPBasicAuth(KAGGLE_USERNAME, KAGGLE_KEY)
 
 
 KAGGLE_REQUEST_TIMEOUT = int(os.getenv("KAGGLE_REQUEST_TIMEOUT", "120"))
@@ -467,8 +469,8 @@ def health():
     return {
         "status":           "ok",
         "service":          "kaggle-orchestrator",
-        "kaggle_configured": bool(KAGGLE_API_TOKEN and KAGGLE_USERNAME),
-        "auth_method":      "HTTP Basic (username:apiKey)",
+        "kaggle_configured": bool(KAGGLE_API_TOKEN and KAGGLE_KEY and KAGGLE_USERNAME),
+        "auth_method":      "kagglehub: OAuth (KAGGLE_API_TOKEN), REST: Basic (KAGGLE_KEY)",
     }
 
 
