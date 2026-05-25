@@ -425,7 +425,7 @@ class TestUploadDatasetEndpoint:
                  "dataset_slug": "alpaca-rl-aapl",
                  "url": "https://kaggle.com/datasets/testuser/alpaca-rl-aapl",
                  "status": "success",
-             }) as mock_upload, \
+             }), \
              patch("os.unlink"):
             resp = app_client.post("/kaggle/datasets/upload", json={
                 "symbol": "AAPL",
