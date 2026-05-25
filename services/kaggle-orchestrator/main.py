@@ -49,11 +49,6 @@ S3_SECRET_KEY            = os.getenv("S3_SECRET_KEY", "minioadmin")
 KAGGLE_API_TOKEN         = os.getenv("KAGGLE_API_TOKEN", "")
 KAGGLE_USERNAME          = os.getenv("KAGGLE_USERNAME", "")
 KAGGLE_ORCHESTRATOR_PORT = int(os.getenv("KAGGLE_ORCHESTRATOR_PORT", "8011"))
-
-# kagglehub reads credentials from KAGGLE_USERNAME + KAGGLE_KEY env vars.
-# Bridge our KAGGLE_API_TOKEN so kagglehub picks it up automatically.
-if KAGGLE_API_TOKEN and not os.environ.get("KAGGLE_KEY"):
-    os.environ["KAGGLE_KEY"] = KAGGLE_API_TOKEN
 BACKTEST_SERVICE_URL     = os.getenv("BACKTEST_SERVICE_URL", "http://backtest:8001")
 
 KAGGLE_API_BASE = "https://www.kaggle.com/api/v1"
