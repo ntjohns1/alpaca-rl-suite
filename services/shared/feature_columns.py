@@ -17,4 +17,19 @@ SHARADAR_COLS = [
 
 ALL_FEATURE_COLS = TECHNICAL_COLS + SHARADAR_COLS
 
-VALID_FEATURE_MODES = ("precomputed", "compute")
+VALID_FEATURE_MODES = ("precomputed", "compute", "auto")
+
+
+def detect_active_cols(df):
+    """
+    Inspect a DataFrame and return the feature columns that have signal.
+    Drops SHARADAR columns that are entirely NaN (e.g. ETFs like SPY).
+    Always keeps TECHNICAL_COLS.
+    """
+    useful_sharadar = [
+        c for c in SHARADAR_COLS
+        if c in df.columns and df[c].notna().any()
+    ]
+    if useful_sharadar:
+        return TECHNICAL_COLS + useful_sharadar
+    return list(TECHNICAL_COLS)

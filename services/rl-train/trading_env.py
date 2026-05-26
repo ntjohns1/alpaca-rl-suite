@@ -13,7 +13,10 @@ from gymnasium import spaces
 from sklearn.preprocessing import scale
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
-from feature_columns import TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
+from feature_columns import (
+    TECHNICAL_COLS, SHARADAR_COLS, ALL_FEATURE_COLS,
+    VALID_FEATURE_MODES, detect_active_cols,
+)
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +37,9 @@ class DataSource:
         df: DataFrame indexed by date.
             precomputed mode: must contain ret_1d..ultosc + SHARADAR cols + close.
             compute mode: must contain close, high, low columns.
-        feature_mode: "precomputed" or "compute"
+            auto mode: like precomputed, but drops SHARADAR cols that are all NaN
+                       (e.g. ETFs like SPY that lack fundamental data).
+        feature_mode: "precomputed", "compute", or "auto"
         """
         if feature_mode not in VALID_FEATURE_MODES:
             raise ValueError(
@@ -45,9 +50,17 @@ class DataSource:
         self.normalize = normalize
         self.feature_mode = feature_mode
         if feature_mode == "compute":
-            self._active_cols = TECHNICAL_COLS
+            self._active_cols = list(TECHNICAL_COLS)
+        elif feature_mode == "auto":
+            self._active_cols = detect_active_cols(df)
+            dropped = set(ALL_FEATURE_COLS) - set(self._active_cols)
+            if dropped:
+                log.info(
+                    "Auto feature mode: dropped %d all-NaN columns: %s",
+                    len(dropped), sorted(dropped),
+                )
         else:
-            self._active_cols = ALL_FEATURE_COLS
+            self._active_cols = list(ALL_FEATURE_COLS)
         self.data = self._preprocess(df)
         self.min_values = self.data.min()
         self.max_values = self.data.max()
@@ -78,11 +91,12 @@ class DataSource:
                 df["high"], df["low"], df["close"]
             ).ultimate_oscillator()
         else:
-            # Precomputed mode: replace inf before fillna so inf doesn't survive
+            # Precomputed / auto mode: replace inf before fillna
             df = df.replace([np.inf, -np.inf], np.nan)
-            sharadar_present = [c for c in SHARADAR_COLS if c in df.columns]
-            if sharadar_present:
-                df[sharadar_present] = df[sharadar_present].fillna(0)
+            # Only fill SHARADAR cols that are in _active_cols (auto mode drops all-NaN ones)
+            sharadar_active = [c for c in SHARADAR_COLS if c in self._active_cols and c in df.columns]
+            if sharadar_active:
+                df[sharadar_active] = df[sharadar_active].fillna(0)
             # Fill any missing feature columns with 0
             for c in self._active_cols:
                 if c not in df.columns:
@@ -185,7 +199,7 @@ class TradingEnvironment(gym.Env):
         trading_days: int = 252,
         trading_cost_bps: float = 1e-3,
         time_cost_bps: float = 1e-4,
-        feature_mode: str = "precomputed",
+        feature_mode: str = "auto",
     ):
         super().__init__()
         self.trading_days     = trading_days

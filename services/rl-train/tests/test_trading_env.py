@@ -16,7 +16,7 @@ from trading_env import (
 )
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "shared"))
-from feature_columns import TECHNICAL_COLS, ALL_FEATURE_COLS, VALID_FEATURE_MODES
+from feature_columns import TECHNICAL_COLS, ALL_FEATURE_COLS, SHARADAR_COLS, VALID_FEATURE_MODES
 
 
 # ─── helpers ────────────────────────────────────────────────────────────────
@@ -68,9 +68,19 @@ def _make_precomputed_df(n: int = 300, seed: int = 0) -> pd.DataFrame:
     return df
 
 
+def _make_etf_df(n: int = 300, seed: int = 0) -> pd.DataFrame:
+    """Pre-computed data with all-NaN SHARADAR cols — simulates an ETF like SPY."""
+    df = _make_precomputed_df(n, seed)
+    for c in SHARADAR_COLS:
+        df[c] = np.nan
+    return df
+
+
 def _make_env(n: int = 300, seed: int = 0, feature_mode: str = "compute") -> TradingEnvironment:
     if feature_mode == "compute":
         return TradingEnvironment(df=_make_ohlcv_df(n, seed), feature_mode="compute")
+    if feature_mode == "auto":
+        return TradingEnvironment(df=_make_precomputed_df(n, seed), feature_mode="auto")
     return TradingEnvironment(df=_make_precomputed_df(n, seed), feature_mode="precomputed")
 
 
@@ -150,6 +160,46 @@ class TestFeatureModeValidation:
                 df = _make_precomputed_df(300)
             ds = DataSource(df=df, feature_mode=mode)
             assert ds.data is not None
+
+
+class TestDataSourceAuto:
+    def test_auto_keeps_all_cols_when_sharadar_present(self):
+        """Auto mode keeps SHARADAR cols when they have real data."""
+        ds = DataSource(df=_make_precomputed_df(300), feature_mode="auto")
+        assert len(ds._active_cols) == len(ALL_FEATURE_COLS)
+        assert ds.data.shape[1] == len(ALL_FEATURE_COLS)
+
+    def test_auto_drops_all_nan_sharadar_for_etf(self):
+        """Auto mode drops all-NaN SHARADAR cols (ETF like SPY)."""
+        df = _make_etf_df(300)
+        ds = DataSource(df=df, feature_mode="auto")
+        assert len(ds._active_cols) == len(TECHNICAL_COLS)
+        assert ds.data.shape[1] == len(TECHNICAL_COLS)
+
+    def test_auto_keeps_partial_sharadar(self):
+        """Auto mode keeps SHARADAR cols that have any non-NaN values."""
+        df = _make_precomputed_df(300)
+        # Null out all but pe and roe
+        for c in SHARADAR_COLS:
+            if c not in ("pe", "roe"):
+                df[c] = np.nan
+        ds = DataSource(df=df, feature_mode="auto")
+        assert "pe" in ds._active_cols
+        assert "roe" in ds._active_cols
+        assert "pb" not in ds._active_cols
+        assert ds.data.shape[1] == len(TECHNICAL_COLS) + 2
+
+    def test_auto_no_nans_in_output(self):
+        df = _make_etf_df(300)
+        ds = DataSource(df=df, feature_mode="auto")
+        assert not ds.data.isnull().any().any()
+
+    def test_auto_scaling_works(self):
+        df = _make_etf_df(300)
+        ds = DataSource(df=df, feature_mode="auto", normalize=True)
+        means = ds.data.mean()
+        for col in TECHNICAL_COLS:
+            assert abs(means[col]) < 0.1, f"{col} mean not near 0: {means[col]}"
 
 
 # ─── TradingEnvironment ──────────────────────────────────────────────────────
@@ -271,6 +321,32 @@ class TestPrecomputedEnvironment:
         env.reset()
         total_reward = 0.0
         done = False
+        while not done:
+            _, reward, done, truncated, _ = env.step(2)
+            total_reward += reward
+            done = done or truncated
+        assert np.isfinite(total_reward)
+
+
+class TestAutoModeEnvironment:
+    def test_default_is_auto(self):
+        """TradingEnvironment defaults to feature_mode='auto'."""
+        env = TradingEnvironment(df=_make_precomputed_df(300))
+        assert env.data_source.feature_mode == "auto"
+
+    def test_etf_observation_space_is_10(self):
+        env = TradingEnvironment(df=_make_etf_df(300), feature_mode="auto")
+        assert env.observation_space.shape == (10,)
+
+    def test_stock_observation_space_is_20(self):
+        env = TradingEnvironment(df=_make_precomputed_df(300), feature_mode="auto")
+        assert env.observation_space.shape == (20,)
+
+    def test_etf_full_episode(self):
+        env = TradingEnvironment(df=_make_etf_df(300), feature_mode="auto")
+        env.reset()
+        done = False
+        total_reward = 0.0
         while not done:
             _, reward, done, truncated, _ = env.step(2)
             total_reward += reward
