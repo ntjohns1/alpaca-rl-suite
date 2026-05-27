@@ -346,6 +346,7 @@ def test_kaggle_export_sql_selects_all_20_features_and_close():
         data = {
             "date": pd.date_range("2024-01-01", periods=320, freq="B"),
             "close": np.linspace(100, 130, 320),
+            "symbol": ["SPY"] * 320,
         }
         for i, col in enumerate(ALL_FEATURE_COLS):
             data[col] = np.full(320, i, dtype=float)
@@ -354,7 +355,7 @@ def test_kaggle_export_sql_selects_all_20_features_and_close():
     with patch.object(module, "get_conn", return_value=_MockConn()), \
          patch.object(module.pd, "read_sql", side_effect=fake_read_sql), \
          patch.object(pd.DataFrame, "to_csv", autospec=True) as mock_to_csv:
-        result = module.export_training_dataset("SPY", "/tmp/fake.csv")
+        result = module.export_training_dataset(["SPY"], "/tmp/fake.csv")
 
     sql = captured["sql"]
     for col in ALL_FEATURE_COLS + ["close"]:
@@ -368,11 +369,12 @@ def test_trading_env_precomputed_mode_uses_shared_columns():
     module = load_module("trading_env_contract", TRADING_ENV_PATH)
 
     assert module.DataSource.FEATURE_COLS == ALL_FEATURE_COLS
+    n = 300  # enough rows for default trading_days (252)
     ds = module.DataSource(
         df=pd.DataFrame({
-            **{col: np.linspace(0.1, 1.0, 80) for col in ALL_FEATURE_COLS},
-            "close": np.linspace(100, 110, 80),
-        }, index=pd.date_range("2024-01-01", periods=80, freq="B")),
+            **{col: np.linspace(0.1, 1.0, n) for col in ALL_FEATURE_COLS},
+            "close": np.linspace(100, 110, n),
+        }, index=pd.date_range("2024-01-01", periods=n, freq="B")),
         feature_mode="precomputed",
     )
     assert ds.data.shape[1] == len(ALL_FEATURE_COLS)

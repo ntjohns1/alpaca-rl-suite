@@ -2,6 +2,11 @@
 Trading environment for RL training.
 Adapted from 22_deep_reinforcement_learning/trading_env.py
 Changes: loads from PostgreSQL/parquet instead of assets.h5
+
+Supports single-stock and multi-stock training:
+  - Single stock: DataFrame indexed by date (no 'symbol' column)
+  - Multi stock: DataFrame with 'symbol' column; each episode randomly
+    selects a stock and time offset within it.
 """
 import logging
 import sys
@@ -10,7 +15,6 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
-from sklearn.preprocessing import scale
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 from feature_columns import (
@@ -24,22 +28,30 @@ log = logging.getLogger(__name__)
 class DataSource:
     """
     Loads & preprocesses daily bar data.
-    Supports two modes:
-      - "precomputed" (default): expects 20 pre-computed feature columns from feature-builder.
-      - "compute": recomputes 10 technical indicators from OHLCV (requires `ta` library).
+
+    Supports:
+      - Single stock (DataFrame indexed by date, no 'symbol' column)
+      - Multi stock (DataFrame with 'symbol' column — each reset() picks a
+        random stock, then a random time offset within it)
+
+    Feature modes:
+      - "auto" (default): like precomputed but drops SHARADAR cols that are
+        entirely NaN across all stocks (e.g. ETFs).
+      - "precomputed": expects 20 pre-computed feature columns.
+      - "compute": recomputes 10 technical indicators from OHLCV.
     """
 
     FEATURE_COLS = ALL_FEATURE_COLS  # 20 features
 
     def __init__(self, df: pd.DataFrame, trading_days: int = 252,
-                 normalize: bool = True, feature_mode: str = "precomputed"):
+                 normalize: bool = True, feature_mode: str = "precomputed",
+                 train_ratio: float = 1.0):
         """
-        df: DataFrame indexed by date.
-            precomputed mode: must contain ret_1d..ultosc + SHARADAR cols + close.
-            compute mode: must contain close, high, low columns.
-            auto mode: like precomputed, but drops SHARADAR cols that are all NaN
-                       (e.g. ETFs like SPY that lack fundamental data).
+        df: DataFrame indexed by date (single stock) or with 'symbol' column (multi stock).
         feature_mode: "precomputed", "compute", or "auto"
+        train_ratio: fraction of data to use for training (0 < r <= 1).
+                     If < 1, the remainder is held out for validation.
+                     Split is temporal — train on earlier data, test on later.
         """
         if feature_mode not in VALID_FEATURE_MODES:
             raise ValueError(
@@ -49,6 +61,17 @@ class DataSource:
         self.trading_days = trading_days
         self.normalize = normalize
         self.feature_mode = feature_mode
+        self.train_ratio = train_ratio
+
+        # Detect multi-stock vs single-stock
+        self._multi_stock = "symbol" in df.columns
+        if self._multi_stock:
+            self._symbols = sorted(df["symbol"].unique().tolist())
+            log.info("Multi-stock mode: %d symbols — %s", len(self._symbols), self._symbols)
+        else:
+            self._symbols = [None]  # sentinel for single-stock
+
+        # Determine active feature columns (before per-stock preprocessing)
         if feature_mode == "compute":
             self._active_cols = list(TECHNICAL_COLS)
         elif feature_mode == "auto":
@@ -61,13 +84,56 @@ class DataSource:
                 )
         else:
             self._active_cols = list(ALL_FEATURE_COLS)
-        self.data = self._preprocess(df)
+
+        # Preprocess and split into per-stock data
+        self._stock_data = {}   # {symbol: DataFrame of scaled features}
+        self._stock_ret1d = {}  # {symbol: Series of raw ret_1d}
+        self._stock_train_end = {}  # {symbol: last train index}
+
+        if self._multi_stock:
+            for sym in self._symbols:
+                sym_df = df[df["symbol"] == sym].copy()
+                if "symbol" in sym_df.columns:
+                    sym_df = sym_df.drop(columns=["symbol"])
+                # Index by date for consistent handling
+                if "time" in sym_df.columns:
+                    sym_df["time"] = pd.to_datetime(sym_df["time"])
+                    sym_df = sym_df.set_index("time")
+                self._preprocess_stock(sym, sym_df)
+        else:
+            self._preprocess_stock(None, df)
+
+        # Remove stocks with insufficient data
+        min_rows = trading_days + 1
+        short_stocks = [s for s, d in self._stock_data.items() if len(d) < min_rows]
+        for s in short_stocks:
+            log.warning(
+                "Dropping %s: only %d rows (need %d for %d trading_days)",
+                s, len(self._stock_data[s]), min_rows, trading_days,
+            )
+            del self._stock_data[s]
+            del self._stock_ret1d[s]
+            if s in self._stock_train_end:
+                del self._stock_train_end[s]
+            if s in self._symbols:
+                self._symbols.remove(s)
+
+        if not self._stock_data:
+            raise ValueError("No stocks have enough data for the requested trading_days")
+
+        # Aggregate stats (for backward compat — uses first/only stock)
+        first_key = self._symbols[0]
+        self.data = self._stock_data[first_key]
+        self._ret_1d = self._stock_ret1d[first_key]
         self.min_values = self.data.min()
         self.max_values = self.data.max()
+
         self.step = 0
         self.offset = None
+        self._current_symbol = first_key
 
-    def _preprocess(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _preprocess_stock(self, symbol, df: pd.DataFrame):
+        """Preprocess a single stock's data and store in _stock_data/_stock_ret1d."""
         df = df.copy().sort_index()
 
         if self.feature_mode == "compute":
@@ -93,28 +159,70 @@ class DataSource:
         else:
             # Precomputed / auto mode: replace inf before fillna
             df = df.replace([np.inf, -np.inf], np.nan)
-            # Only fill SHARADAR cols that are in _active_cols (auto mode drops all-NaN ones)
+            # Only fill SHARADAR cols that are in _active_cols
             sharadar_active = [c for c in SHARADAR_COLS if c in self._active_cols and c in df.columns]
             if sharadar_active:
                 df[sharadar_active] = df[sharadar_active].fillna(0)
             # Fill any missing feature columns with 0
             for c in self._active_cols:
                 if c not in df.columns:
-                    log.warning(f"Missing feature column '{c}', filling with 0")
+                    log.warning("Missing feature column '%s' for %s, filling with 0", c, symbol)
                     df[c] = 0.0
 
         df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=TECHNICAL_COLS)
 
-        # Store raw ret_1d separately for reward signal, then scale all features
-        self._ret_1d = df["ret_1d"].copy()
-        if self.normalize:
-            df[self._active_cols] = scale(df[self._active_cols])
-        return df[self._active_cols]
+        if df.empty:
+            log.warning("No valid rows for %s after preprocessing", symbol)
+            return
 
-    def reset(self):
-        high = len(self.data) - self.trading_days
-        self.offset = np.random.randint(low=0, high=max(high, 1))
+        # Store raw ret_1d separately for reward signal
+        ret_1d = df["ret_1d"].copy()
+
+        # Train/test split (temporal)
+        n = len(df)
+        train_end = int(n * self.train_ratio)
+        if train_end < 1:
+            train_end = 1
+        self._stock_train_end[symbol] = train_end
+
+        # Scale features per-stock (different price regimes)
+        if self.normalize:
+            # Scale using training data stats only to prevent lookahead
+            train_slice = df[self._active_cols].iloc[:train_end]
+            train_mean = train_slice.mean()
+            train_std = train_slice.std().replace(0, 1)  # avoid div by zero
+            df[self._active_cols] = (df[self._active_cols] - train_mean) / train_std
+
+        self._stock_data[symbol] = df[self._active_cols]
+        self._stock_ret1d[symbol] = ret_1d
+
+    def reset(self, test_mode: bool = False):
+        """Reset for a new episode.
+
+        test_mode=False: sample from training portion only.
+        test_mode=True: sample from test (held-out) portion only.
+        """
+        # Pick a random stock
+        self._current_symbol = self._symbols[np.random.randint(len(self._symbols))]
+        data = self._stock_data[self._current_symbol]
+        train_end = self._stock_train_end[self._current_symbol]
+
+        if test_mode and self.train_ratio < 1.0:
+            # Sample from test portion
+            low = train_end
+            high = len(data) - self.trading_days
+        else:
+            # Sample from training portion
+            low = 0
+            high = train_end - self.trading_days
+
+        high = max(high, low + 1)
+        self.offset = np.random.randint(low=low, high=high)
         self.step = 0
+
+        # Update convenience references
+        self.data = data
+        self._ret_1d = self._stock_ret1d[self._current_symbol]
 
     def take_step(self):
         idx = self.offset + self.step
@@ -190,6 +298,9 @@ class TradingEnvironment(gym.Env):
     OpenAI Gymnasium trading environment.
     Actions: 0=SHORT, 1=HOLD, 2=LONG
     Episode: trading_days steps with random start offset.
+
+    Supports single-stock and multi-stock DataFrames.
+    If df has a 'symbol' column, each episode randomly selects a stock.
     """
     metadata = {"render_modes": ["human"]}
 
@@ -200,14 +311,19 @@ class TradingEnvironment(gym.Env):
         trading_cost_bps: float = 1e-3,
         time_cost_bps: float = 1e-4,
         feature_mode: str = "auto",
+        train_ratio: float = 1.0,
     ):
         super().__init__()
         self.trading_days     = trading_days
         self.trading_cost_bps = trading_cost_bps
         self.time_cost_bps    = time_cost_bps
+        self._test_mode       = False
 
-        self.data_source = DataSource(df, trading_days=trading_days,
-                                       feature_mode=feature_mode)
+        self.data_source = DataSource(
+            df, trading_days=trading_days,
+            feature_mode=feature_mode,
+            train_ratio=train_ratio,
+        )
         self.simulator   = TradingSimulator(
             steps=trading_days,
             trading_cost_bps=trading_cost_bps,
@@ -221,9 +337,13 @@ class TradingEnvironment(gym.Env):
         )
         self.reset()
 
+    def set_test_mode(self, enabled: bool = True):
+        """Switch between train and test (held-out) data for episodes."""
+        self._test_mode = enabled
+
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.data_source.reset()
+        self.data_source.reset(test_mode=self._test_mode)
         self.simulator.reset()
         obs, _, _ = self.data_source.take_step()
         return obs.astype(np.float32), {}
@@ -234,6 +354,8 @@ class TradingEnvironment(gym.Env):
         reward, info = self.simulator.take_step(
             action=action, market_return=market_return
         )
+        # Include current symbol in info for logging
+        info["symbol"] = self.data_source._current_symbol
         return obs.astype(np.float32), float(reward), done, False, info
 
     def render(self):

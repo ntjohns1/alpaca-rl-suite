@@ -34,9 +34,9 @@ class TestUploadDatasetToKaggle:
         with open(csv_path, "w") as f:
             f.write("date,close\n2024-01-01,400.0\n")
 
-        with patch("main.kagglehub.dataset_upload") as mock_upload:
+        with patch("kagglehub.dataset_upload") as mock_upload:
             from main import upload_dataset_to_kaggle
-            result = upload_dataset_to_kaggle("SPY", csv_path, "alpaca-rl-spy")
+            result = upload_dataset_to_kaggle(["SPY"], csv_path, "alpaca-rl-spy")
 
         assert result["dataset_slug"] == "alpaca-rl-spy"
         assert result["status"] == "success"
@@ -53,9 +53,9 @@ class TestUploadDatasetToKaggle:
         with open(csv_path, "w") as f:
             f.write("date,close\n2024-01-01,400.0\n")
 
-        with patch("main.kagglehub.dataset_upload"):
+        with patch("kagglehub.dataset_upload"):
             from main import upload_dataset_to_kaggle
-            upload_dataset_to_kaggle("SPY", csv_path, "alpaca-rl-spy")
+            upload_dataset_to_kaggle(["SPY"], csv_path, "alpaca-rl-spy")
 
         assert os.path.exists(csv_path), "Original CSV should still exist"
 
@@ -101,7 +101,7 @@ class TestDownloadModelViaKagglehub:
     def test_downloads_via_kagglehub(self, monkeypatch, tmp_path):
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
 
-        with patch("main.kagglehub.notebook_output_download",
+        with patch("kagglehub.notebook_output_download",
                    return_value=str(tmp_path)) as mock_dl:
             from main import download_model_via_kagglehub
             result = download_model_via_kagglehub("alpaca-rl-training", str(tmp_path))
