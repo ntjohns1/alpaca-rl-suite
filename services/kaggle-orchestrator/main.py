@@ -351,17 +351,21 @@ class RejectionRequest(BaseModel):
 
 class DatasetUploadRequest(BaseModel):
     """Upload a dataset to Kaggle from exported features."""
-    symbols: list[str]
+    symbols: Optional[list[str]] = None
+    symbol: Optional[str] = None        # backward compat: single-stock uploads
     datasetSlug: Optional[str] = None
 
-    # Backward compat: accept 'symbol' as alias for single-stock uploads
     @classmethod
-    def __get_validators__(cls):
-        yield cls._validate
+    def model_validate(cls, *args, **kwargs):
+        return super().model_validate(*args, **kwargs)
 
-    @classmethod
-    def _validate(cls, v):
-        return v
+    def get_symbols(self) -> list[str]:
+        """Return normalized symbols list, accepting either 'symbols' or 'symbol'."""
+        if self.symbols:
+            return self.symbols
+        if self.symbol:
+            return [self.symbol]
+        raise ValueError("Either 'symbols' or 'symbol' must be provided")
 
 
 class ModelDownloadRequest(BaseModel):
@@ -534,7 +538,7 @@ def upload_dataset(
     _user: dict = Depends(get_current_user),
 ):
     """Export features for symbol(s) and upload to Kaggle as a dataset."""
-    symbols = [s.upper() for s in req.symbols]
+    symbols = [s.upper() for s in req.get_symbols()]
     if len(symbols) == 1:
         default_slug = f"alpaca-rl-{symbols[0].lower()}"
     else:

@@ -30,7 +30,7 @@ export function Datasets() {
   })
 
   const uploadMut = useMutation({
-    mutationFn: ({ symbol, slug }: { symbol: string; slug?: string }) => uploadToKaggle(symbol, slug),
+    mutationFn: ({ symbols, slug }: { symbols: string[]; slug?: string }) => uploadToKaggle(symbols, slug),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['kaggle-datasets'] })
       setUploadingSymbol(null)
@@ -39,9 +39,9 @@ export function Datasets() {
   })
 
   function handleUploadToKaggle(ds: Dataset) {
-    const symbol = Array.isArray(ds.symbols) ? ds.symbols[0] : ds.symbols
-    setUploadingSymbol(symbol)
-    uploadMut.mutate({ symbol })
+    const symbols = Array.isArray(ds.symbols) ? ds.symbols : [ds.symbols]
+    setUploadingSymbol(symbols[0])
+    uploadMut.mutate({ symbols })
   }
 
   if (isLoading) return <div className="flex items-center justify-center py-20 text-muted-foreground">Loading...</div>
