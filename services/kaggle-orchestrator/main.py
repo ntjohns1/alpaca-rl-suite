@@ -17,7 +17,6 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import boto3
-import kagglehub
 import pandas as pd
 import psycopg2
 import requests
@@ -173,6 +172,7 @@ def upload_dataset_to_kaggle(symbols: list[str], csv_path: str, dataset_slug: st
         # Copy (not move) so caller's file is preserved
         shutil.copy2(csv_path, staged)
 
+        import kagglehub
         kagglehub.dataset_upload(
             handle,
             staging_dir,
@@ -218,6 +218,7 @@ def download_model_via_kagglehub(kernel_slug: str, output_dir: str) -> str:
     caching automatically. We copy the results to output_dir.
     """
     handle = f"{KAGGLE_USERNAME}/{kernel_slug}"
+    import kagglehub
     cache_path = kagglehub.notebook_output_download(handle, output_dir=output_dir)
     log.info("Downloaded notebook output via kagglehub to %s", cache_path)
     return cache_path

@@ -8,4 +8,4 @@ python-dotenv==1.0.1
 pydantic==2.7.1
 python-jose[cryptography]>=3.3.0
 python-keycloak>=3.9.0
-kagglehub>=0.3.0
+kagglehub>=0.3.0,<1.0.0

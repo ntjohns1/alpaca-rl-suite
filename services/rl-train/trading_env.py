@@ -15,7 +15,6 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 from gymnasium import spaces
-from sklearn.preprocessing import scale
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "shared"))
 from feature_columns import (
