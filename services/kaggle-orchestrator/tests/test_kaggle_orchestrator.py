@@ -456,6 +456,25 @@ class TestUploadDatasetEndpoint:
         assert body["datasetSlug"] == "alpaca-rl-multi-stock"
 
 
+    def test_backward_compat_singular_symbol(self, app_client, monkeypatch):
+        """Sending 'symbol' (singular string) should still work for backward compat."""
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        with patch("main.export_training_dataset", return_value={"rows": 400, "symbols": ["SPY"]}), \
+             patch("main.upload_dataset_to_kaggle", return_value={
+                 "dataset_slug": "alpaca-rl-spy",
+                 "url": "https://kaggle.com/datasets/testuser/alpaca-rl-spy",
+                 "status": "success",
+             }), \
+             patch("os.unlink"):
+            resp = app_client.post("/kaggle/datasets/upload", json={
+                "symbol": "SPY",
+            })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["symbols"] == ["SPY"]
+
+
 class TestDownloadModelEndpoint:
     def test_downloads_and_returns_201(self, app_client, monkeypatch, tmp_path):
         monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")

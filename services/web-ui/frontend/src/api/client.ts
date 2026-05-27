@@ -33,7 +33,7 @@ export const rejectJob       = (id: string, reason?: string) => request<Approval
 
 // ── Kaggle Datasets & Models ──────────────────────────────
 export const fetchKaggleDatasets = () => request<KaggleDatasetsResponse>('/kaggle/datasets')
-export const uploadToKaggle      = (symbol: string, datasetSlug?: string) => request<KaggleUploadResponse>('/kaggle/datasets/upload', { method: 'POST', body: JSON.stringify({ symbol, datasetSlug }) })
+export const uploadToKaggle      = (symbols: string[], datasetSlug?: string) => request<KaggleUploadResponse>('/kaggle/datasets/upload', { method: 'POST', body: JSON.stringify({ symbols, datasetSlug }) })
 export const downloadModel       = (kernelSlug: string) => request<ModelDownloadResponse>('/kaggle/models/download', { method: 'POST', body: JSON.stringify({ kernelSlug }) })
 
 // ── Backtest ───────────────────────────────────────────────
@@ -156,7 +156,7 @@ export interface KaggleDatasetsResponse {
 }
 
 export interface KaggleUploadResponse {
-  symbol: string
+  symbols: string[]
   datasetSlug: string
   exportInfo: Record<string, unknown>
   kaggleUrl: string
