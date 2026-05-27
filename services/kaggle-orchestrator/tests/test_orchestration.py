@@ -36,7 +36,7 @@ class TestUploadDatasetToKaggle:
 
         with patch("main.kagglehub.dataset_upload") as mock_upload:
             from main import upload_dataset_to_kaggle
-            result = upload_dataset_to_kaggle("SPY", csv_path, "alpaca-rl-spy")
+            result = upload_dataset_to_kaggle(["SPY"], csv_path, "alpaca-rl-spy")
 
         assert result["dataset_slug"] == "alpaca-rl-spy"
         assert result["status"] == "success"
@@ -55,7 +55,7 @@ class TestUploadDatasetToKaggle:
 
         with patch("main.kagglehub.dataset_upload"):
             from main import upload_dataset_to_kaggle
-            upload_dataset_to_kaggle("SPY", csv_path, "alpaca-rl-spy")
+            upload_dataset_to_kaggle(["SPY"], csv_path, "alpaca-rl-spy")
 
         assert os.path.exists(csv_path), "Original CSV should still exist"
 

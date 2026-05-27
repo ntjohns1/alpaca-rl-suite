@@ -97,29 +97,58 @@ def kaggle_request(method: str, endpoint: str, **kwargs):
 # ─────────────────────────────────────────
 # Dataset Export
 # ─────────────────────────────────────────
-def export_training_dataset(symbol: str, output_path: str) -> dict:
-    """Export pre-computed feature rows (20 features + close) to CSV for Kaggle upload."""
+def export_training_dataset(symbols: list[str], output_path: str) -> dict:
+    """Export pre-computed feature rows (20 features + close) to CSV for Kaggle upload.
+
+    Supports single or multiple symbols. Multi-symbol exports include a 'symbol'
+    column so the trading environment can sample episodes across stocks.
+    """
+    placeholders = ",".join(["%s"] * len(symbols))
     with get_conn() as conn:
         df = pd.read_sql(
-            """SELECT f.time::date as date,
-                      f.ret_1d, f.ret_2d, f.ret_5d, f.ret_10d, f.ret_21d,
-                      f.rsi, f.macd, f.atr, f.stoch, f.ultosc,
-                      f.pe, f.pb, f.ps, f.evebitda, f.marketcap_log,
-                      f.roe, f.roa, f.debt_equity, f.revenue_growth, f.fcf_yield,
-                      b.close::float as close
-               FROM feature_row f
-               JOIN bar_1d b USING (time, symbol)
-               WHERE f.symbol=%s
-               ORDER BY f.time""",
-            conn, params=(symbol,),
+            f"""SELECT f.time::date as date,
+                       f.symbol,
+                       f.ret_1d, f.ret_2d, f.ret_5d, f.ret_10d, f.ret_21d,
+                       f.rsi, f.macd, f.atr, f.stoch, f.ultosc,
+                       f.pe, f.pb, f.ps, f.evebitda, f.marketcap_log,
+                       f.roe, f.roa, f.debt_equity, f.revenue_growth, f.fcf_yield,
+                       b.close::float as close
+                FROM feature_row f
+                JOIN bar_1d b USING (time, symbol)
+                WHERE f.symbol IN ({placeholders})
+                ORDER BY f.symbol, f.time""",
+            conn, params=tuple(symbols),
         )
     if len(df) < 300:
-        raise ValueError(f"Insufficient data for {symbol}: {len(df)} feature rows")
+        raise ValueError(
+            f"Insufficient data for {symbols}: {len(df)} feature rows (need >= 300)"
+        )
+
+    # Per-symbol diagnostics
+    per_symbol = {}
+    for sym in symbols:
+        sym_df = df[df["symbol"] == sym]
+        if sym_df.empty:
+            log.warning("No data found for symbol %s", sym)
+            continue
+        per_symbol[sym] = {
+            "rows": len(sym_df),
+            "date_range": f"{sym_df['date'].min()} to {sym_df['date'].max()}",
+        }
+
+    # For single-symbol exports, drop the symbol column for backward compat
+    if len(symbols) == 1:
+        df = df.drop(columns=["symbol"])
+
     df.to_csv(output_path, index=False)
-    log.info(f"Exported {len(df)} feature rows for {symbol} to {output_path}")
+    log.info(
+        "Exported %d feature rows for %s to %s",
+        len(df), symbols, output_path,
+    )
     return {
-        "symbol": symbol,
+        "symbols": symbols,
         "rows": len(df),
+        "per_symbol": per_symbol,
         "date_range": f"{df['date'].min()} to {df['date'].max()}",
         "path": output_path,
         "feature_version": "v2",
@@ -129,13 +158,14 @@ def export_training_dataset(symbol: str, output_path: str) -> dict:
 # ─────────────────────────────────────────
 # Kaggle dataset & model operations (kagglehub)
 # ─────────────────────────────────────────
-def upload_dataset_to_kaggle(symbol: str, csv_path: str, dataset_slug: str) -> dict:
+def upload_dataset_to_kaggle(symbols: list[str], csv_path: str, dataset_slug: str) -> dict:
     """Upload a dataset to Kaggle using kagglehub.
 
     kagglehub.dataset_upload() handles create-or-update automatically.
     The CSV file must be in a directory by itself (kagglehub uploads the dir).
     """
     handle = f"{KAGGLE_USERNAME}/{dataset_slug}"
+    label = ",".join(symbols)
 
     # kagglehub expects a directory, so stage the CSV in a temp dir
     with tempfile.TemporaryDirectory() as staging_dir:
@@ -146,7 +176,7 @@ def upload_dataset_to_kaggle(symbol: str, csv_path: str, dataset_slug: str) -> d
         kagglehub.dataset_upload(
             handle,
             staging_dir,
-            version_notes=f"Updated {symbol} features",
+            version_notes=f"Updated {label} features",
         )
 
     log.info("Uploaded dataset to Kaggle via kagglehub: %s", handle)
@@ -320,8 +350,17 @@ class RejectionRequest(BaseModel):
 
 class DatasetUploadRequest(BaseModel):
     """Upload a dataset to Kaggle from exported features."""
-    symbol: str
+    symbols: list[str]
     datasetSlug: Optional[str] = None
+
+    # Backward compat: accept 'symbol' as alias for single-stock uploads
+    @classmethod
+    def __get_validators__(cls):
+        yield cls._validate
+
+    @classmethod
+    def _validate(cls, v):
+        return v
 
 
 class ModelDownloadRequest(BaseModel):
@@ -493,19 +532,23 @@ def upload_dataset(
     req: DatasetUploadRequest,
     _user: dict = Depends(get_current_user),
 ):
-    """Export features for a symbol and upload to Kaggle as a dataset."""
-    symbol = req.symbol.upper()
-    dataset_slug = req.datasetSlug or f"alpaca-rl-{symbol.lower()}"
+    """Export features for symbol(s) and upload to Kaggle as a dataset."""
+    symbols = [s.upper() for s in req.symbols]
+    if len(symbols) == 1:
+        default_slug = f"alpaca-rl-{symbols[0].lower()}"
+    else:
+        default_slug = "alpaca-rl-multi-stock"
+    dataset_slug = req.datasetSlug or default_slug
 
-    # Export synchronously (fast), then upload in background
+    prefix = "_".join(s.lower() for s in symbols[:3])  # keep filename sane
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".csv", prefix=f"{symbol.lower()}_features_", delete=False,
+        mode="w", suffix=".csv", prefix=f"{prefix}_features_", delete=False,
     ) as tmp:
         csv_path = tmp.name
 
     try:
-        export_info = export_training_dataset(symbol, csv_path)
-        result = upload_dataset_to_kaggle(symbol, csv_path, dataset_slug)
+        export_info = export_training_dataset(symbols, csv_path)
+        result = upload_dataset_to_kaggle(symbols, csv_path, dataset_slug)
     finally:
         try:
             os.unlink(csv_path)
@@ -513,7 +556,7 @@ def upload_dataset(
             pass
 
     return {
-        "symbol": symbol,
+        "symbols": symbols,
         "datasetSlug": dataset_slug,
         "exportInfo": export_info,
         "kaggleUrl": result["url"],

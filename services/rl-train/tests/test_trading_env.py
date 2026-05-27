@@ -76,6 +76,35 @@ def _make_etf_df(n: int = 300, seed: int = 0) -> pd.DataFrame:
     return df
 
 
+def _make_multi_stock_df(
+    symbols: list[str] = None,
+    n_per_stock: int = 300,
+    seed: int = 0,
+    etf_symbols: list[str] = None,
+) -> pd.DataFrame:
+    """Multi-stock DataFrame with 'symbol' column.
+
+    symbols: list of ticker symbols (default: ["AAPL", "MSFT", "NVDA"])
+    etf_symbols: subset of symbols that should have all-NaN SHARADAR cols
+    """
+    if symbols is None:
+        symbols = ["AAPL", "MSFT", "NVDA"]
+    if etf_symbols is None:
+        etf_symbols = []
+
+    frames = []
+    for i, sym in enumerate(symbols):
+        if sym in etf_symbols:
+            df = _make_etf_df(n_per_stock, seed=seed + i)
+        else:
+            df = _make_precomputed_df(n_per_stock, seed=seed + i)
+        df = df.reset_index()
+        df["symbol"] = sym
+        df = df.rename(columns={"date": "time"})
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True)
+
+
 def _make_env(n: int = 300, seed: int = 0, feature_mode: str = "compute") -> TradingEnvironment:
     if feature_mode == "compute":
         return TradingEnvironment(df=_make_ohlcv_df(n, seed), feature_mode="compute")
@@ -352,3 +381,207 @@ class TestAutoModeEnvironment:
             total_reward += reward
             done = done or truncated
         assert np.isfinite(total_reward)
+
+
+# ─── Multi-stock DataSource ─────────────────────────────────────────────────
+
+class TestMultiStockDataSource:
+    def test_detects_multi_stock_mode(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        ds = DataSource(df=df, feature_mode="precomputed")
+        assert ds._multi_stock is True
+        assert set(ds._symbols) == {"AAPL", "MSFT"}
+
+    def test_single_stock_no_symbol_column(self):
+        df = _make_precomputed_df(300)
+        ds = DataSource(df=df, feature_mode="precomputed")
+        assert ds._multi_stock is False
+        assert ds._symbols == [None]
+
+    def test_per_stock_data_stored_separately(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT", "NVDA"])
+        ds = DataSource(df=df, feature_mode="precomputed")
+        assert len(ds._stock_data) == 3
+        for sym in ["AAPL", "MSFT", "NVDA"]:
+            assert sym in ds._stock_data
+            assert sym in ds._stock_ret1d
+
+    def test_reset_picks_random_symbol(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT", "NVDA"])
+        ds = DataSource(df=df, feature_mode="precomputed")
+        symbols_seen = set()
+        for _ in range(100):
+            ds.reset()
+            symbols_seen.add(ds._current_symbol)
+        # With 100 resets and 3 symbols, should see all 3
+        assert symbols_seen == {"AAPL", "MSFT", "NVDA"}
+
+    def test_take_step_returns_correct_feature_count(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        ds = DataSource(df=df, feature_mode="precomputed")
+        ds.reset()
+        obs, market_return, done = ds.take_step()
+        assert len(obs) == len(ALL_FEATURE_COLS)
+        assert np.isfinite(market_return)
+
+    def test_drops_stocks_with_insufficient_data(self):
+        # AAPL has 300 rows (enough), TINY has 50 rows (not enough for 252 trading_days)
+        df_good = _make_precomputed_df(300, seed=0).reset_index()
+        df_good["symbol"] = "AAPL"
+        df_good = df_good.rename(columns={"date": "time"})
+        df_short = _make_precomputed_df(50, seed=1).reset_index()
+        df_short["symbol"] = "TINY"
+        df_short = df_short.rename(columns={"date": "time"})
+        df = pd.concat([df_good, df_short], ignore_index=True)
+        ds = DataSource(df=df, feature_mode="precomputed")
+        assert "AAPL" in ds._stock_data
+        assert "TINY" not in ds._stock_data
+
+    def test_all_stocks_insufficient_raises(self):
+        df = _make_multi_stock_df(["A", "B"], n_per_stock=50)
+        with pytest.raises(ValueError, match="No stocks have enough data"):
+            DataSource(df=df, feature_mode="precomputed")
+
+    def test_no_nans_in_multi_stock_data(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        ds = DataSource(df=df, feature_mode="precomputed")
+        for sym, data in ds._stock_data.items():
+            assert not data.isnull().any().any(), f"NaNs found in {sym}"
+
+    def test_auto_mode_with_mixed_etf_and_stock(self):
+        """Auto mode with a mix of ETFs (no SHARADAR) and stocks (has SHARADAR)."""
+        df = _make_multi_stock_df(
+            ["SPY", "AAPL"], etf_symbols=["SPY"],
+        )
+        # Auto mode detects active cols across ALL stocks — AAPL has SHARADAR data
+        ds = DataSource(df=df, feature_mode="auto")
+        assert len(ds._active_cols) == len(ALL_FEATURE_COLS)
+        # SPY should have SHARADAR cols filled with 0
+        spy_data = ds._stock_data["SPY"]
+        assert not spy_data.isnull().any().any()
+
+
+# ─── Train/test split ───────────────────────────────────────────────────────
+
+class TestTrainTestSplit:
+    def test_default_train_ratio_is_1(self):
+        ds = DataSource(df=_make_precomputed_df(300), feature_mode="precomputed")
+        assert ds.train_ratio == 1.0
+
+    def test_train_end_index_correct(self):
+        ds = DataSource(
+            df=_make_precomputed_df(300), feature_mode="precomputed",
+            train_ratio=0.8,
+        )
+        n = len(ds.data)
+        expected_train_end = int(n * 0.8)
+        assert ds._stock_train_end[None] == expected_train_end
+
+    def test_train_mode_samples_from_train_portion(self):
+        ds = DataSource(
+            df=_make_precomputed_df(400), feature_mode="precomputed",
+            train_ratio=0.7, trading_days=50,
+        )
+        train_end = ds._stock_train_end[None]
+        for _ in range(50):
+            ds.reset(test_mode=False)
+            # offset + trading_days should stay within train portion
+            assert ds.offset < train_end
+
+    def test_test_mode_samples_from_test_portion(self):
+        ds = DataSource(
+            df=_make_precomputed_df(500), feature_mode="precomputed",
+            train_ratio=0.7, trading_days=50,
+        )
+        train_end = ds._stock_train_end[None]
+        for _ in range(50):
+            ds.reset(test_mode=True)
+            assert ds.offset >= train_end
+
+    def test_scaling_uses_train_stats_only(self):
+        """Verify normalization uses training data mean/std (no lookahead)."""
+        n = 400
+        df = _make_precomputed_df(n)
+        ds = DataSource(
+            df=df, feature_mode="precomputed", train_ratio=0.75, normalize=True,
+        )
+        # Training portion mean should be ~0, test portion may differ
+        train_end = ds._stock_train_end[None]
+        train_data = ds.data.iloc[:train_end]
+        train_means = train_data.mean()
+        for col in ALL_FEATURE_COLS:
+            assert abs(train_means[col]) < 0.15, (
+                f"Train {col} mean not near 0: {train_means[col]}"
+            )
+
+    def test_multi_stock_train_test_split(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"], n_per_stock=400)
+        ds = DataSource(
+            df=df, feature_mode="precomputed", train_ratio=0.7, trading_days=50,
+        )
+        for sym in ["AAPL", "MSFT"]:
+            assert sym in ds._stock_train_end
+            assert ds._stock_train_end[sym] > 0
+            assert ds._stock_train_end[sym] < len(ds._stock_data[sym])
+
+
+# ─── Multi-stock TradingEnvironment ──────────────────────────────────────────
+
+class TestMultiStockEnvironment:
+    def test_observation_space_shape(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        env = TradingEnvironment(df=df, feature_mode="precomputed")
+        assert env.observation_space.shape == (20,)
+
+    def test_reset_returns_valid_obs(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        env = TradingEnvironment(df=df, feature_mode="precomputed")
+        obs, info = env.reset()
+        assert obs.shape == (20,)
+        assert obs.dtype == np.float32
+        assert np.all(np.isfinite(obs))
+
+    def test_step_returns_symbol_in_info(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        env = TradingEnvironment(df=df, feature_mode="precomputed")
+        env.reset()
+        _, _, _, _, info = env.step(1)
+        assert "symbol" in info
+        assert info["symbol"] in ["AAPL", "MSFT"]
+
+    def test_full_episode_multi_stock(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"])
+        env = TradingEnvironment(df=df, feature_mode="precomputed")
+        env.reset()
+        done = False
+        total_reward = 0.0
+        while not done:
+            _, reward, done, truncated, _ = env.step(env.action_space.sample())
+            total_reward += reward
+            done = done or truncated
+        assert np.isfinite(total_reward)
+
+    def test_set_test_mode(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT"], n_per_stock=400)
+        env = TradingEnvironment(
+            df=df, feature_mode="precomputed",
+            trading_days=50, train_ratio=0.7,
+        )
+        env.set_test_mode(True)
+        obs, _ = env.reset()
+        assert obs.shape == env.observation_space.shape
+        # Should complete an episode in test mode
+        done = False
+        while not done:
+            _, _, done, truncated, _ = env.step(1)
+            done = done or truncated
+
+    def test_episodes_visit_multiple_symbols(self):
+        df = _make_multi_stock_df(["AAPL", "MSFT", "NVDA"])
+        env = TradingEnvironment(df=df, feature_mode="precomputed", trading_days=50)
+        symbols_seen = set()
+        for _ in range(50):
+            env.reset()
+            _, _, _, _, info = env.step(1)
+            symbols_seen.add(info["symbol"])
+        assert len(symbols_seen) >= 2, f"Only saw {symbols_seen}"

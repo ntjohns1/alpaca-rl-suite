@@ -117,25 +117,27 @@ class TestExportTrainingDataset:
     def test_raises_on_insufficient_data(self, mock_db_conn):
         mock_conn, _ = mock_db_conn
         small_df = self._make_feature_export_df(10)
+        small_df["symbol"] = "SPY"
         with patch("main.get_conn") as mock_gc:
             mock_gc.return_value.__enter__ = lambda s: s
             mock_gc.return_value.__exit__ = MagicMock(return_value=False)
             with patch("pandas.read_sql", return_value=small_df):
                 import main
                 with pytest.raises(ValueError, match="Insufficient data"):
-                    main.export_training_dataset("SPY", "/tmp/test.csv")
+                    main.export_training_dataset(["SPY"], "/tmp/test.csv")
 
     def test_writes_csv_for_adequate_data(self, tmp_path, mock_db_conn):
         df = self._make_feature_export_df(400)
+        df["symbol"] = "SPY"
         out = str(tmp_path / "data.csv")
         with patch("main.get_conn") as mock_gc, \
              patch("pandas.read_sql", return_value=df):
             mock_gc.return_value.__enter__ = lambda s: s
             mock_gc.return_value.__exit__ = MagicMock(return_value=False)
             import main
-            result = main.export_training_dataset("SPY", out)
+            result = main.export_training_dataset(["SPY"], out)
         assert result["rows"] == 400
-        assert result["symbol"] == "SPY"
+        assert result["symbols"] == ["SPY"]
         assert result["feature_version"] == "v2"
 
 
@@ -401,7 +403,7 @@ class TestUploadDatasetEndpoint:
     def test_uploads_and_returns_201(self, app_client, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        with patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "SPY"}), \
+        with patch("main.export_training_dataset", return_value={"rows": 400, "symbols": ["SPY"]}), \
              patch("main.upload_dataset_to_kaggle", return_value={
                  "dataset_slug": "alpaca-rl-spy",
                  "url": "https://kaggle.com/datasets/testuser/alpaca-rl-spy",
@@ -409,18 +411,18 @@ class TestUploadDatasetEndpoint:
              }), \
              patch("os.unlink"):
             resp = app_client.post("/kaggle/datasets/upload", json={
-                "symbol": "SPY",
+                "symbols": ["SPY"],
             })
         assert resp.status_code == 201
         body = resp.json()
         assert body["status"] == "uploaded"
-        assert body["symbol"] == "SPY"
+        assert body["symbols"] == ["SPY"]
         assert "kaggleUrl" in body
 
     def test_uses_default_slug(self, app_client, monkeypatch):
         monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
         monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
-        with patch("main.export_training_dataset", return_value={"rows": 400, "symbol": "AAPL"}), \
+        with patch("main.export_training_dataset", return_value={"rows": 400, "symbols": ["AAPL"]}), \
              patch("main.upload_dataset_to_kaggle", return_value={
                  "dataset_slug": "alpaca-rl-aapl",
                  "url": "https://kaggle.com/datasets/testuser/alpaca-rl-aapl",
@@ -428,10 +430,30 @@ class TestUploadDatasetEndpoint:
              }), \
              patch("os.unlink"):
             resp = app_client.post("/kaggle/datasets/upload", json={
-                "symbol": "AAPL",
+                "symbols": ["AAPL"],
             })
         assert resp.status_code == 201
         assert resp.json()["datasetSlug"] == "alpaca-rl-aapl"
+
+    def test_multi_symbol_upload(self, app_client, monkeypatch):
+        monkeypatch.setattr("main.KAGGLE_KEY", "tok-123")
+        monkeypatch.setattr("main.KAGGLE_USERNAME", "testuser")
+        with patch("main.export_training_dataset", return_value={
+                 "rows": 800, "symbols": ["SPY", "AAPL"],
+             }), \
+             patch("main.upload_dataset_to_kaggle", return_value={
+                 "dataset_slug": "alpaca-rl-multi-stock",
+                 "url": "https://kaggle.com/datasets/testuser/alpaca-rl-multi-stock",
+                 "status": "success",
+             }), \
+             patch("os.unlink"):
+            resp = app_client.post("/kaggle/datasets/upload", json={
+                "symbols": ["SPY", "AAPL"],
+            })
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["symbols"] == ["SPY", "AAPL"]
+        assert body["datasetSlug"] == "alpaca-rl-multi-stock"
 
 
 class TestDownloadModelEndpoint:
